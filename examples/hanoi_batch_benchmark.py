@@ -16,6 +16,7 @@ from games_bench.llm import (
     CodexCLIProvider,
     OpenAIResponsesProvider,
     OpenRouterProvider,
+    build_recording,
     default_instructions,
     run_tool_calling_episode,
 )
@@ -290,6 +291,16 @@ def main() -> int:
         action="store_true",
         help="Disable raw provider responses in traces.",
     )
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="Write per-episode recordings (states/actions) into run directory.",
+    )
+    parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Disable recordings even if config enables them.",
+    )
 
     args = parser.parse_args()
 
@@ -348,6 +359,13 @@ def main() -> int:
     else:
         record_provider_raw = bool((config or {}).get("record_provider_raw", False))
 
+    if args.record:
+        record = True
+    elif args.no_record:
+        record = False
+    else:
+        record = bool((config or {}).get("record", False))
+
     provider_name = args.provider
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -376,6 +394,9 @@ def main() -> int:
 
         episodes_path = out_dir / "episodes.jsonl"
         traces_path = out_dir / "traces.jsonl"
+        recordings_dir = out_dir / "recordings"
+        if record:
+            recordings_dir.mkdir(parents=True, exist_ok=True)
 
         episodes: list[dict[str, Any]] = []
         episode_id = 0
@@ -425,6 +446,28 @@ def main() -> int:
                                 "usage": result.usage,
                                 "cost": result.cost,
                             }
+                            if record:
+                                recording = build_recording(
+                                    events=result.events,
+                                    metadata={
+                                        "episode_id": episode_id,
+                                        "variant_id": variant_id,
+                                        "run_idx": run_idx,
+                                        "provider": provider_name,
+                                        "model": model_name,
+                                        "n_disks": n_disks,
+                                        "prompt_variant": prompt_variant.name,
+                                        "tools_variant": tool_variant.name,
+                                        "solved": result.solved,
+                                    },
+                                )
+                                recording_path = (
+                                    recordings_dir / f"episode_{episode_id:04d}.json"
+                                )
+                                recording_path.write_text(
+                                    json.dumps(recording, indent=2)
+                                )
+                                episode["recording_file"] = str(recording_path)
                             episodes.append(episode)
                             ep_file.write(json.dumps(episode) + "\n")
                             trace_file.write(

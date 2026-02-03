@@ -61,6 +61,12 @@ Outputs go to `runs/hanoi/<provider>/<model>/<run_id>/` with:
 - `traces.jsonl` (full traces)
 - `summary.json` (aggregates)
 
+Recordings (states + actions only):
+
+- Add `--record` to the batch run to write `recordings/episode_XXXX.json` in the run folder.
+- Render later with: `uv run python -m examples.hanoi_render_recording --run-dir <run_dir> --format html`
+- Optional video: `uv sync --group viz` then `uv run python -m examples.hanoi_render_recording --run-dir <run_dir> --format video`
+
 ### Tower of Hanoi
 
 The Tower of Hanoi environment lives in `games_bench/hanoi.py` and supports:
