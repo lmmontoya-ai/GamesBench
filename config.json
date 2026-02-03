@@ -1,7 +1,6 @@
 {
   "models": {
-    "openrouter": ["openai/gpt-4.1-mini", "anthropic/claude-3.5-sonnet"],
-    "openai": ["gpt-4.1-mini"]
+    "openrouter": ["openai/gpt-4.1-mini"]
   },
   "n_disks": [3, 4],
   "prompt_variants": ["minimal", "full"],

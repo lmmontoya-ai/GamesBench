@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .harness import EpisodeResult, default_instructions, run_tool_calling_episode
+from .recording import build_recording
 from .providers import (
     CLIProvider,
     CodexCLIProvider,
@@ -19,5 +20,6 @@ __all__ = [
     "OpenRouterProvider",
     "ToolCall",
     "default_instructions",
+    "build_recording",
     "run_tool_calling_episode",
 ]
