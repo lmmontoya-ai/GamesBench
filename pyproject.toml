@@ -1,7 +1,11 @@
 [project]
 name = "games-bench"
 version = "0.1.0"
-description = "Add your description here"
+description = "Benchmark environments for RL and LLM tool-calling research"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[dependency-groups]
+dev = ["black==24.1.1", "pre-commit"]
+llm = ["openai"]
