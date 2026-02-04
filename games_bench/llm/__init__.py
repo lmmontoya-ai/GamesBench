@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from .harness import EpisodeResult, default_instructions, run_tool_calling_episode
+from .harness import EpisodeResult, run_tool_calling_episode
+from games_bench.games.hanoi.prompts import default_instructions
 from .recording import build_recording
 from .providers import (
     CLIProvider,

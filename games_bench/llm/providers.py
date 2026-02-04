@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+import time
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -158,6 +159,8 @@ def _tool_schemas_to_openai_responses(
 class OpenRouterProvider:
     """OpenRouter provider using OpenAI-compatible Chat Completions."""
 
+    supports_images = True
+
     def __init__(
         self,
         *,
@@ -167,6 +170,8 @@ class OpenRouterProvider:
         x_title: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        max_retries: int = 2,
+        retry_backoff_s: float = 1.0,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -176,6 +181,8 @@ class OpenRouterProvider:
         self.x_title = x_title or os.environ.get("OPENROUTER_X_TITLE")
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff_s = float(retry_backoff_s)
 
     def next_tool_calls(
         self,
@@ -183,6 +190,7 @@ class OpenRouterProvider:
         state_text: str,
         tool_schemas: list[dict[str, Any]],
         instructions: str,
+        state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
         try:
             from openai import OpenAI
@@ -202,10 +210,27 @@ class OpenRouterProvider:
         )
 
         tools = _tool_schemas_to_openai_chat(tool_schemas)
-        messages = [
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": state_text},
-        ]
+        if state_image:
+            content: list[dict[str, Any]] = []
+            if state_text:
+                content.append({"type": "text", "text": state_text})
+            data_url = state_image.get("data_url")
+            if not data_url:
+                mime = state_image.get("mime_type", "image/png")
+                data = state_image.get("data_base64")
+                if data:
+                    data_url = f"data:{mime};base64,{data}"
+            if data_url:
+                content.append({"type": "image_url", "image_url": {"url": data_url}})
+            messages = [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": content or state_text},
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": state_text},
+            ]
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -217,8 +242,22 @@ class OpenRouterProvider:
         if self.max_tokens is not None:
             kwargs["max_tokens"] = self.max_tokens
 
-        response = client.chat.completions.create(**kwargs)
-        data = response.model_dump() if hasattr(response, "model_dump") else response
+        attempt = 0
+        data: dict[str, Any] | Any
+        while True:
+            try:
+                response = client.chat.completions.create(**kwargs)
+                data = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else response
+                )
+                break
+            except Exception as exc:  # pragma: no cover
+                attempt += 1
+                if attempt > self.max_retries:
+                    return ProviderResult([], raw=None, error=f"Provider error: {exc}")
+                time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
         usage = _normalize_usage(data.get("usage")) if isinstance(data, dict) else None
         cost = _extract_cost(usage, data if isinstance(data, dict) else None)
         choices = data.get("choices", [])
@@ -227,6 +266,43 @@ class OpenRouterProvider:
                 [], raw=data, error="No choices returned.", usage=usage, cost=cost
             )
         message = choices[0].get("message", {})
+        err = None
+        if isinstance(choices[0], dict) and "error" in choices[0]:
+            err = choices[0].get("error")
+        if err and isinstance(err, dict):
+            code = err.get("code")
+            if isinstance(code, int) and 500 <= code < 600 and self.max_retries > 0:
+                # Retry on upstream 5xx embedded in payload
+                for attempt in range(1, self.max_retries + 1):
+                    time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
+                    try:
+                        response = client.chat.completions.create(**kwargs)
+                        data = (
+                            response.model_dump()
+                            if hasattr(response, "model_dump")
+                            else response
+                        )
+                        usage = (
+                            _normalize_usage(data.get("usage"))
+                            if isinstance(data, dict)
+                            else None
+                        )
+                        cost = _extract_cost(
+                            usage, data if isinstance(data, dict) else None
+                        )
+                        choices = data.get("choices", [])
+                        if not choices:
+                            return ProviderResult(
+                                [],
+                                raw=data,
+                                error="No choices returned.",
+                                usage=usage,
+                                cost=cost,
+                            )
+                        message = choices[0].get("message", {})
+                        break
+                    except Exception:
+                        continue
         tool_calls = message.get("tool_calls")
         if tool_calls:
             return ProviderResult(
@@ -246,6 +322,8 @@ class OpenRouterProvider:
 
 class OpenAIResponsesProvider:
     """OpenAI Responses API provider."""
+
+    supports_images = False
 
     def __init__(
         self,
@@ -268,6 +346,7 @@ class OpenAIResponsesProvider:
         state_text: str,
         tool_schemas: list[dict[str, Any]],
         instructions: str,
+        state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
         try:
             from openai import OpenAI
@@ -276,6 +355,12 @@ class OpenAIResponsesProvider:
 
         client = OpenAI(api_key=self.api_key)
         tools = _tool_schemas_to_openai_responses(tool_schemas)
+        if state_image:
+            return ProviderResult(
+                [],
+                raw=None,
+                error="Image inputs are not supported by this provider in this harness.",
+            )
         kwargs: dict[str, Any] = {
             "model": self.model,
             "instructions": instructions,
@@ -317,6 +402,8 @@ class OpenAIResponsesProvider:
 class CLIProvider:
     """Run a local CLI and parse a JSON tool call from stdout."""
 
+    supports_images = False
+
     def __init__(
         self,
         *,
@@ -353,7 +440,14 @@ class CLIProvider:
         state_text: str,
         tool_schemas: list[dict[str, Any]],
         instructions: str,
+        state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
+        if state_image:
+            return ProviderResult(
+                [],
+                raw=None,
+                error="Image inputs are not supported by CLIProvider.",
+            )
         prompt = (
             f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
             f"{json.dumps(tool_schemas, indent=2)}\n\n"
@@ -386,6 +480,8 @@ class CLIProvider:
 
 class CodexCLIProvider:
     """Codex CLI provider using --output-last-message and --output-schema."""
+
+    supports_images = False
 
     def __init__(
         self,
@@ -420,7 +516,14 @@ class CodexCLIProvider:
         state_text: str,
         tool_schemas: list[dict[str, Any]],
         instructions: str,
+        state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
+        if state_image:
+            return ProviderResult(
+                [],
+                raw=None,
+                error="Image inputs are not supported by CodexCLIProvider.",
+            )
         prompt = (
             f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
             f"{json.dumps(tool_schemas, indent=2)}\n\n"

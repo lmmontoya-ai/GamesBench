@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from games_bench.hanoi import IllegalMoveError, TowerOfHanoiEnv
+from games_bench.games.hanoi.env import IllegalMoveError, TowerOfHanoiEnv
 
 
 class TestTowerOfHanoiEnv(unittest.TestCase):
