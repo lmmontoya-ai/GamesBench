@@ -4,7 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from games_bench.hanoi import HanoiToolbox, TowerOfHanoiEnv, tool_schemas
+from games_bench.games.hanoi.env import HanoiToolbox, TowerOfHanoiEnv, tool_schemas
+from games_bench.games.hanoi.prompts import default_instructions
 
 from .providers import ProviderResult, ToolCall
 
@@ -21,17 +22,6 @@ class EpisodeResult:
     events: list[dict[str, Any]]
     usage: dict[str, float] | None
     cost: float | None
-
-
-def default_instructions() -> str:
-    return (
-        "You are solving Tower of Hanoi.\n"
-        "- Pegs are indexed 0, 1, 2.\n"
-        "- Disks are integers; 1 is smallest.\n"
-        "- Only move the top disk of a peg.\n"
-        "- Never place a larger disk on a smaller disk.\n"
-        "Call exactly one tool per turn."
-    )
 
 
 def _execute_tool(toolbox: HanoiToolbox, call: ToolCall) -> dict[str, Any]:
@@ -76,6 +66,7 @@ def run_tool_calling_episode(
     tool_prefix: str = "hanoi",
     instructions: str | None = None,
     state_formatter: Callable[[TowerOfHanoiEnv], str] | None = None,
+    state_image_renderer: Callable[[TowerOfHanoiEnv], dict[str, Any]] | None = None,
     allowed_tools: list[str] | None = None,
     record_provider_raw: bool = False,
 ) -> EpisodeResult:
@@ -95,6 +86,8 @@ def run_tool_calling_episode(
             include_legal_moves=False, include_action_space=False
         )
     )
+    if state_image_renderer and not getattr(provider, "supports_images", False):
+        raise ValueError("Provider does not support image inputs.")
 
     illegal_moves = 0
     tool_calls = 0
@@ -107,14 +100,29 @@ def run_tool_calling_episode(
         if env.is_solved():
             break
         state_text = state_formatter(env)
+        state_image = state_image_renderer(env) if state_image_renderer else None
+        snapshot = env.get_state().to_dict()
         try:
             state_payload = json.loads(state_text)
         except json.JSONDecodeError:
             state_payload = state_text
-        events.append({"type": "state", "state": state_payload})
+        events.append({"type": "state_snapshot", "state": snapshot})
+        events.append(
+            {"type": "state", "state": state_payload, "state_text": state_text}
+        )
+        if state_image:
+            meta = {
+                "mime_type": state_image.get("mime_type"),
+                "width": state_image.get("width"),
+                "height": state_image.get("height"),
+            }
+            events.append({"type": "state_image", "meta": meta})
 
         result: ProviderResult = provider.next_tool_calls(
-            state_text=state_text, tool_schemas=tools, instructions=instructions
+            state_text=state_text,
+            tool_schemas=tools,
+            instructions=instructions,
+            state_image=state_image,
         )
         if result.usage:
             _accumulate_usage(usage_totals, result.usage)

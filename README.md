@@ -6,55 +6,86 @@ Framework-agnostic benchmark environments for reinforcement learning (RL) and LL
 
 - Create/update the virtual environment (installs dev tools like `black` and `pre-commit`): `uv sync`
 - Run tests: `uv run python -m unittest discover -s tests`
-- Run examples: `uv run python -m examples.hanoi_rl`
+- Run a quick demo: `uv run games-bench rl`
 - Optional: set API keys in `.env`
+
+### Repo layout
+
+- `games_bench/`: Python package (games + benchmark harnesses)
+- `games_bench/games/<game>/`: per-game envs, prompts, renderers
+- `games_bench/bench/`: runnable benchmarks/demos (batch, review, render, provider)
+- `apps/renderer-hanoi/`: Three.js playback renderer
+- `configs/`: sample benchmark configs
+- `artifacts/`: run outputs (`runs/`, `renders/`, `reviews/`)
+
+Legacy `examples/` entrypoints are kept as thin wrappers for backward compatibility.
 
 ### LLM tool-calling
 
 There are two ways to try tool-calling:
 
-- Manual loop (copy/paste tool calls from any LLM UI): `uv run python -m examples.hanoi_manual_tool_loop`
-- OpenAI API loop (requires `OPENAI_API_KEY`): `uv sync --group llm` then `uv run python -m examples.hanoi_openai_tool_calling`
+- Manual loop (copy/paste tool calls from any LLM UI): `uv run games-bench manual-tool-loop`
+- OpenAI API loop (requires `OPENAI_API_KEY`): `uv sync --group llm` then `uv run games-bench openai-tool-calling`
 
 ### Provider harnesses (OpenRouter / CLI agents)
 
 Run a provider-backed benchmark episode:
 
 - `uv sync --group llm`
-- OpenRouter: `OPENROUTER_API_KEY=... OPENROUTER_MODEL=... uv run python -m examples.hanoi_provider_benchmark --provider openrouter`
+- OpenRouter: `OPENROUTER_API_KEY=... OPENROUTER_MODEL=... uv run games-bench provider --provider openrouter`
   - Optional: `OPENROUTER_HTTP_REFERER` and `OPENROUTER_X_TITLE`
-- OpenAI Responses: `OPENAI_API_KEY=... uv run python -m examples.hanoi_provider_benchmark --provider openai`
+- OpenAI Responses: `OPENAI_API_KEY=... uv run games-bench provider --provider openai`
 
 CLI-backed agents (Codex CLI, Claude Code, etc.):
 
-- Codex CLI (uses `codex exec`): `uv run python -m examples.hanoi_provider_benchmark --provider codex`
+- Codex CLI (uses `codex exec`): `uv run games-bench provider --provider codex`
 - Generic CLI (expects a JSON tool call on stdout):
-  - Example with Claude Code: `uv run python -m examples.hanoi_provider_benchmark --provider cli --cli-cmd "claude -p --output-format json {prompt}" --no-stdin`
+  - Example with Claude Code: `uv run games-bench provider --provider cli --cli-cmd "claude -p --output-format json {prompt}" --no-stdin`
 
 Command block:
 
 ```
 uv sync --group llm
-OpenRouter: OPENROUTER_API_KEY=... OPENROUTER_MODEL=... uv run python -m examples.hanoi_provider_benchmark --provider openrouter
-OpenAI: OPENAI_API_KEY=... uv run python -m examples.hanoi_provider_benchmark --provider openai
-Codex CLI: uv run python -m examples.hanoi_provider_benchmark --provider codex
-Claude Code (generic CLI): uv run python -m examples.hanoi_provider_benchmark --provider cli --cli-cmd "claude -p --output-format json {prompt}" --no-stdin
+OpenRouter: OPENROUTER_API_KEY=... OPENROUTER_MODEL=... uv run games-bench provider --provider openrouter
+OpenAI: OPENAI_API_KEY=... uv run games-bench provider --provider openai
+Codex CLI: uv run games-bench provider --provider codex
+Claude Code (generic CLI): uv run games-bench provider --provider cli --cli-cmd "claude -p --output-format json {prompt}" --no-stdin
 ```
 
 ### Batch benchmark
 
 Run multiple episodes across variants (n_disks, prompts, allowed tools) and write JSONL traces:
 
-- `uv run python -m examples.hanoi_batch_benchmark --provider openrouter --n-disks 3,4 --prompt-variant minimal --prompt-variant full --tools-variant move_only --tools-variant all_tools --runs-per-variant 5`
-- Or use `config.json` to run a list of models:
-  - `uv run python -m examples.hanoi_batch_benchmark --provider openrouter --config config.json`
+- `uv run games-bench run --provider openrouter --n-disks 3,4 --prompt-variant minimal --prompt-variant full --tools-variant move_only --tools-variant all_tools --runs-per-variant 5`
+- Or use `configs/hanoi.json` to run a list of models:
+  - `uv run games-bench run --provider openrouter --config configs/hanoi.json`
+  - Limit to a game: `uv run games-bench run --provider openrouter --config configs/hanoi.json --game hanoi`
 
 `config.json` supports:
 
-- `models` (list or map by provider)
-- `n_disks`, `prompt_variants`, `tool_variants`, `runs_per_variant`, `max_turns`, `out_dir`
+- Global defaults: `models` (list or map by provider), `out_dir`, `record`, `record_raw`,
+  `record_provider_raw`, `provider_retries`, `provider_backoff`, `state_format`,
+  `image_size`, `image_labels`, `image_background`
+- Per-game overrides under `games` (object or list), e.g. `n_disks`, `prompt_variants`,
+  `tool_variants`, `runs_per_variant`, `max_turns`, `start_peg`, `goal_peg`
 
-Outputs go to `runs/hanoi/<provider>/<model>/<run_id>/` with:
+Example (multi-game ready):
+
+```
+{
+  "models": { "openrouter": ["openai/gpt-4.1-mini"] },
+  "out_dir": "artifacts/runs",
+  "games": {
+    "hanoi": {
+      "n_disks": [3, 4],
+      "prompt_variants": ["minimal", "full"],
+      "tool_variants": ["move_only", "all_tools"]
+    }
+  }
+}
+```
+
+Outputs go to `artifacts/runs/<game>/<provider>/<model>/<run_id>/` with:
 
 - `run_config.json` (run settings)
 - `episodes.jsonl` (per-episode metrics)
@@ -64,15 +95,35 @@ Outputs go to `runs/hanoi/<provider>/<model>/<run_id>/` with:
 Recordings (states + actions only):
 
 - Add `--record` to the batch run to write `recordings/episode_XXXX.json` in the run folder.
-- Render later with: `uv run python -m examples.hanoi_render_recording --run-dir <run_dir> --format html`
-- Optional video: `uv sync --group viz` then `uv run python -m examples.hanoi_render_recording --run-dir <run_dir> --format video`
+- Render later with: `uv run games-bench render --run-dir <run_dir> --format html`
+- Optional video: `uv sync --group viz` then `uv run games-bench render --run-dir <run_dir> --format video`
+- Manual review (prompt + per-step images): `uv run games-bench review --run-dir <run_dir>`
+- Raw generations (prompt + model output + tool result): add `--record-raw` to `games-bench run` to write `raw_generations.jsonl`.
+
+### 3D Renderer (Bun + Three.js)
+
+Interactive 3D playback lives under `apps/renderer-hanoi` and supports arbitrary pegs/disks and recording playback.
+
+Run locally:
+
+- `cd apps/renderer-hanoi`
+- `bun install`
+- `bun run dev`
+
+Load a recording via file picker or URL (e.g., `recordings/episode_0000.json` from a run). Use the export buttons to save PNGs or record a WebM video.
+
+For vision benchmarks or automation, the renderer exposes:
+
+- `window.hanoiRenderer.setState(pegs, nDisks)`
+- `window.hanoiRenderer.setRecordingStep(index)`
+- `window.hanoiRenderer.exportPNG()`
 
 ### Tower of Hanoi
 
-The Tower of Hanoi environment lives in `games_bench/hanoi.py` and supports:
+The Tower of Hanoi environment lives in `games_bench/games/hanoi/env.py` (with a backward-compatible re-export in `games_bench/hanoi.py`) and supports:
 
 - RL loop: `state -> action -> step() -> (state, reward, done, info)`
-- Tool-calling: JSON schemas via `games_bench.hanoi.tool_schemas()` and a prompt-friendly state string via `TowerOfHanoiEnv.format_prompt_state()`
+- Tool-calling: JSON schemas via `games_bench.games.hanoi.tool_schemas()` and a prompt-friendly state string via `TowerOfHanoiEnv.format_prompt_state()`
 
 #### State representation
 
@@ -90,15 +141,19 @@ The Tower of Hanoi environment lives in `games_bench/hanoi.py` and supports:
 
 The reward function is configurable:
 
+#### Prompts
+
+Prompt templates for the Hanoi benchmark live in `games_bench/games/hanoi/prompts/` (including the explicit goal and image-specific suffix).
+
 - `step_penalty`: applied on each *legal* step (often negative to encourage shorter solutions)
 - `illegal_move_penalty`: applied when an illegal action is attempted in `step()`
 - `solve_reward`: added when the puzzle is solved
 - `shaping_weight`: optional reward shaping based on progress on the goal peg (set to `0.0` for sparse rewards)
 
-Run the examples:
+Run the demos:
 
-- `uv run python -m examples.hanoi_rl`
-- `uv run python -m examples.hanoi_tool_calling`
+- `uv run games-bench rl`
+- `uv run games-bench tool-calling`
 
 Run tests:
 

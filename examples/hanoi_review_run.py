@@ -1,4 +1,4 @@
-from games_bench.bench.cli import main
+from games_bench.bench.review import main
 
 
 if __name__ == "__main__":

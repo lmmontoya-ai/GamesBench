@@ -1,0 +1,1 @@
+The current state is provided as an image. Pegs are labeled left-to-right as 0, 1, 2. Disk size increases with width.

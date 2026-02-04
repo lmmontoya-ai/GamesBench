@@ -13,3 +13,11 @@ wheels/
 .env
 runs/
 renders/
+reviews/
+artifacts/
+.DS_Store
+
+# Renderer build artifacts
+apps/**/node_modules/
+apps/**/dist/
+apps/**/.vite/

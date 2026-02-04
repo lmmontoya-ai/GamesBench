@@ -1,8 +1,6 @@
-"""Backward-compatible re-export for Tower of Hanoi."""
-
 from __future__ import annotations
 
-from games_bench.games.hanoi.env import (
+from .env import (
     ACTION_SPACE,
     Action,
     Disk,
@@ -17,6 +15,18 @@ from games_bench.games.hanoi.env import (
     format_state_for_prompt,
     state_schema,
     tool_schemas,
+)
+from .vision import (
+    StateImage,
+    render_hanoi_env_image,
+    render_hanoi_image,
+    render_hanoi_state_image,
+)
+from .prompts import (
+    IMAGE_INSTRUCTIONS_SUFFIX,
+    default_instructions,
+    format_instructions,
+    with_image_instructions,
 )
 
 __all__ = [
@@ -34,4 +44,12 @@ __all__ = [
     "format_state_for_prompt",
     "state_schema",
     "tool_schemas",
+    "StateImage",
+    "render_hanoi_env_image",
+    "render_hanoi_image",
+    "render_hanoi_state_image",
+    "IMAGE_INSTRUCTIONS_SUFFIX",
+    "default_instructions",
+    "format_instructions",
+    "with_image_instructions",
 ]
