@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 
@@ -10,7 +8,7 @@ from typing import Any, Callable
 class GameSpec:
     name: str
     description: str
-    batch_runner: Callable[[argparse.Namespace, dict[str, Any]], list[Path]]
+    env_factory: Callable[..., Any]
 
 
 _REGISTRY: dict[str, GameSpec] = {}
@@ -33,12 +31,12 @@ def list_games() -> list[str]:
 def load_builtin_games() -> None:
     if _REGISTRY:
         return
-    from games_bench.games.hanoi import bench as hanoi_bench
+    from games_bench.games.hanoi.env import TowerOfHanoiEnv
 
     register_game(
         GameSpec(
             name="hanoi",
             description="Tower of Hanoi",
-            batch_runner=hanoi_bench.run_batch,
+            env_factory=TowerOfHanoiEnv,
         )
     )
