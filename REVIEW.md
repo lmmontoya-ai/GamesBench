@@ -290,9 +290,16 @@ Change `EpisodeResult` to hold `game_metrics: dict[str, Any]` instead of `n_disk
 - Remove the `default_instructions` re-export from `llm/__init__.py`.
 - Remove or deprecate `llm/prompting.py` (it only re-exports Hanoi prompts).
 
-**Step 3.5: Update `bench/hanoi.py`**
+**Step 3.5: Update all downstream consumers of `EpisodeResult`**
 
-Update `run_batch()` to construct a `HanoiAdapter` and pass it to `run_tool_calling_episode()` instead of passing the raw env.
+When `EpisodeResult` changes from hardcoded fields (`n_disks`, `optimal_steps`) to `game_metrics: dict[str, Any]`, every serialization/deserialization touchpoint needs updating:
+
+- `bench/hanoi.py:run_batch()` — construct a `HanoiAdapter` and pass it to `run_tool_calling_episode()` instead of the raw env.
+- `bench/hanoi.py:724-740` (episode dict construction) — read `n_disks`, `move_count`, `optimal_steps` from `result.game_metrics` instead of top-level `EpisodeResult` fields.
+- `bench/hanoi.py:259-329` (`_compute_metrics()`) — references `e["move_count"]`, `e["optimal_steps"]`, `e["illegal_moves"]`, `e["tool_calls"]`. Decide which of these stay as harness-level fields on `EpisodeResult` (they're game-agnostic: every game has moves, illegal attempts, tool calls) vs. which move into `game_metrics` (game-specific: `n_disks`, `optimal_steps`). Update the metric aggregation accordingly.
+- `llm/recording.py:build_recording()` — the `metadata` dict passed in from `bench/hanoi.py:742-754` includes `n_disks`. This stays game-specific and is fine as-is (the caller controls what metadata to pass), but verify the recording summary doesn't reference removed `EpisodeResult` fields.
+- `bench/hanoi.py:179-256` (`_write_raw_generations()`) — this reconstructs prompts from events and is Hanoi-specific benchmark glue. It doesn't directly consume `EpisodeResult` fields, but when a second game arrives it will need a game-layer hook or generalization. Flag it as a known debt item.
+- Output schema stability — `episodes.jsonl` and `summary.json` are consumed by analysis scripts and the review/render tools. The Hanoi batch runner should continue writing `n_disks`, `optimal_steps`, and `move_count` as top-level keys in episode records (not nested under a `game_metrics` key) so existing analysis pipelines don't break. The `EpisodeResult.game_metrics` dict is an internal representation; serialization flattens it back out.
 
 **Step 3.6: Add harness tests**
 
@@ -304,7 +311,9 @@ Write `tests/test_harness.py` with a mock `GameAdapter` (a trivial game that sol
 
 ### Phase 4: Make batch orchestration game-agnostic (F3)
 
-A config-primary workflow is the most scalable pattern for multi-game benchmarking: game-specific parameters live in config files, while CLI handles execution controls and game selection. This fits `games-bench` because `config.py` already supports per-game sections under `"games"`.
+Every serious multi-task benchmark framework (lm-eval-harness, HELM, OpenAI Evals) converges on the same pattern: **config-file primary, CLI for global flags + game selection.** Game/task-specific parameters belong in config files, not CLI flags. The CLI provides: which config to load (`--config`), which games to select (`--game`), common operational flags (provider, model, output dir, retries, recording), and global overrides that apply to all games.
+
+This is the right pattern for `games-bench` because it already mostly works this way: `configs/hanoi.json` has per-game sections under `"games": { "hanoi": { ... } }`, and the config infrastructure (`config.py` with `normalize_games_config`) supports it. The current CLI game-specific flags (`--n-disks`, `--start-peg`) become convenience shortcuts for quick single-game iteration, not the primary interface. Adding a new game means adding a config section and a `BenchSpec` -- not touching the CLI parser. And `--help` stays clean, showing only common flags rather than every game's parameters.
 
 **Step 4.1: Adopt config-primary with subcommands for single-game convenience**
 
