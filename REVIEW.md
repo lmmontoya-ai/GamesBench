@@ -164,11 +164,20 @@ This makes `from games_bench import TowerOfHanoiEnv` the natural import path, bu
 
 This is a bug that affects existing benchmark results. Fix it first.
 
-**Step 1.1: Fix `recording.py` move counter**
+**Step 1.1: Fix `recording.py` move counter (two-stage approach)**
 
-In `llm/recording.py`, change the `tool_result` handler to only count `moves` when the tool call is state-mutating, not any successful tool call. Prefer explicit action metadata from the executor/adapter (for example, `state_mutating: true|false`) and use `state_after != state_before` only as a fallback when metadata is unavailable.
+The ideal fix is to have the executor emit tool-execution metadata (for example `state_mutating`) alongside tool results. But Phase 1 happens *before* the adapter refactor in Phase 3, so the fix is staged:
 
-Implementation note: avoid relying only on state-diff heuristics. State equality can be brittle across games and representations, so metadata should be the primary signal.
+**Stage A (Phase 1, now):** In `llm/recording.py`, classify using `current_action.name` plus known result semantics:
+- `_move`: `ok=true` increments `moves`; `ok=false` increments `illegal_moves`.
+- `_step`: inspect `result.info.illegal_action` when present; illegal attempts increment `illegal_moves`, legal attempts increment `moves`.
+- query tools (`get_state`, `is_solved`, `get_legal_moves`, etc.): increment neither `moves` nor `illegal_moves`.
+
+This is intentionally Hanoi-specific as a hotfix for current data correctness.
+
+**Stage B (Phase 3, later):** When `GameAdapter` lands, adapters emit metadata in the event envelope (for example `tool_result.meta.state_mutating`) and recording reads that metadata instead of parsing tool names. The Stage A heuristic is then removed.
+
+Avoid relying on `state_after != state_before` as the primary signal. State comparison depends on serialization consistency across games, and failed move attempts can also keep state unchanged.
 
 **Step 1.2: Add tests for recording logic**
 
@@ -187,7 +196,7 @@ In `pyproject.toml`:
 - The `[dependency-groups]` dev group stays as-is for development tooling.
 
 After this change:
-- `pip install games-bench` installs only the game engine (zero external deps).
+- `pip install games-bench` installs the package with zero external LLM dependencies.
 - `pip install games-bench[llm]` adds OpenAI for benchmarking.
 - `pip install games-bench[viz]` adds Pillow for image rendering.
 - `pip install games-bench[llm,viz]` installs everything.
@@ -214,7 +223,7 @@ Create `games_bench/llm/game_adapter.py` with a `typing.Protocol`:
 ```python
 class GameAdapter(Protocol):
     def tool_schemas(self) -> list[dict[str, Any]]: ...
-    def execute_tool(self, name: str, arguments: dict) -> dict[str, Any]: ...
+    def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution: ...
     def get_state_snapshot(self) -> dict[str, Any]: ...
     def is_solved(self) -> bool: ...
     def default_instructions(self) -> str: ...
@@ -223,6 +232,34 @@ class GameAdapter(Protocol):
 ```
 
 `episode_metrics()` returns game-specific fields (`n_disks`, `optimal_steps` for Hanoi, different fields for other games) as a flat dict, replacing the hardcoded fields on `EpisodeResult`.
+
+Use a small execution envelope to avoid mutating tool payload schemas:
+
+```python
+@dataclass(frozen=True)
+class ToolExecution:
+    result: dict[str, Any]                  # tool payload as exposed to providers
+    meta: dict[str, Any]                    # internal metadata, e.g. {"state_mutating": True}
+```
+
+This keeps current tool schemas valid (many have `additionalProperties: false`) while still enabling robust move/query classification for recording (completing Stage B of Step 1.1).
+
+**Adapter provides defaults; harness kwargs override.** The harness already accepts `instructions` and `state_formatter` as injectable kwargs (`harness.py:67-68`). The adapter's `default_instructions()` and `format_state()` are what the harness uses when these kwargs are `None`. The harness signature becomes:
+
+```python
+def run_tool_calling_episode(
+    adapter: GameAdapter,
+    provider: Any,
+    *,
+    instructions: str | None = None,     # overrides adapter.default_instructions()
+    state_formatter: Callable[[GameAdapter], str] | None = None,
+    ...
+) -> EpisodeResult:
+    instructions = instructions or adapter.default_instructions()
+    state_text = state_formatter(adapter) if state_formatter else adapter.format_state()
+```
+
+This preserves the current flexibility (bench/hanoi.py already builds custom instructions per prompt variant) while eliminating the Hanoi-specific fallback that's currently hardcoded in the harness.
 
 **Step 3.2: Implement `HanoiAdapter`**
 
@@ -265,32 +302,87 @@ Write `tests/test_harness.py` with a mock `GameAdapter` (a trivial game that sol
 
 ### Phase 4: Make batch orchestration game-agnostic (F3)
 
-**Step 4.1: Split CLI argument parsing**
+A config-primary workflow is the most scalable pattern for multi-game benchmarking: game-specific parameters live in config files, while CLI handles execution controls and game selection. This fits `games-bench` because `config.py` already supports per-game sections under `"games"`.
 
-Extract common batch arguments (provider, model, config, out-dir, timeout, retries, backoff, record flags) into a shared parser in `bench/cli.py` or a new `bench/common.py`. Each game's benchmark module defines only its game-specific arguments.
+**Step 4.1: Adopt config-primary with subcommands for single-game convenience**
 
-`batch.py:main()` builds the common parser, then each game's `BenchSpec` contributes its own argument group:
+The CLI should support three modes:
+
+```bash
+# 1. Multi-game (primary): config-driven, game params from config file
+games-bench run --config configs/benchmark.json --provider openrouter
+
+# 2. Single-game convenience: subcommand exposes game-specific flags
+games-bench run hanoi --n-disks 3,4 --provider openrouter --model gpt-4.1-mini
+
+# 3. Config + game filter: run only one game from a multi-game config
+games-bench run --config configs/benchmark.json --game hanoi
+```
+
+Mode 1 is the reproducible, scalable path. Mode 2 is the quick-iteration path that preserves the current UX for single-game runs. Mode 3 is the intersection.
+
+**Step 4.2: Split CLI argument parsing**
+
+Create a shared base parser in `bench/common.py` (or inline in `batch.py`) with common flags only: `--provider`, `--model`, `--config`, `--game`, `--out-dir`, `--timeout-s`, `--provider-retries`, `--provider-backoff`, `--record`, `--no-record`, `--record-raw`, `--no-record-raw`, `--record-provider-raw`, `--no-record-provider-raw`.
+
+Use argparse subparsers for game-specific CLI modes. Each `BenchSpec` contributes a subparser:
 
 ```python
 @dataclass
 class BenchSpec:
     name: str
     description: str
-    batch_runner: Callable
-    add_arguments: Callable[[argparse.ArgumentParser], None]  # new
+    batch_runner: Callable[[argparse.Namespace, dict[str, Any]], list[Path]]
+    add_arguments: Callable[[argparse.ArgumentParser], None]  # game-specific flags
+    default_config: Callable[[], dict[str, Any]]              # config validation/defaults
 ```
 
-**Step 4.2: Refactor `batch.py` to use registry-driven parsing**
+**Step 4.3: Refactor `batch.py` to use registry-driven parsing**
 
-Instead of `parser = hanoi_bench.build_parser()`, the batch main:
-1. Builds a base parser with shared flags.
-2. Loads builtin benchmarks from the registry.
-3. Each benchmark adds its arguments via `spec.add_arguments(parser)`.
-4. Parses args, dispatches to the matched game's `batch_runner`.
+Replace `parser = hanoi_bench.build_parser()` with:
+1. Build the base parser with common flags.
+2. Load builtin benchmarks from the registry.
+3. Create a subparser for each registered game via `spec.add_arguments(subparser)`.
+4. If a game subcommand is used: merge CLI flags into the game config and dispatch to that game's `batch_runner`.
+5. If `--config` is used without a subcommand: read per-game config sections, dispatch each to its `batch_runner`. Game-specific params come exclusively from the config file; no game-specific CLI flags are available in this mode.
+6. If `--config` + `--game` is used: filter to just that game from the config.
 
-**Step 4.3: Update `bench/hanoi.py` parser**
+This means `--help` on `games-bench run` shows only common flags + available game subcommands. `--help` on `games-bench run hanoi` shows Hanoi-specific flags. No flag pollution across games.
 
-Move Hanoi-specific flags (`--n-disks`, `--start-peg`, `--goal-peg`, `--prompt-variant`, `--tools-variant`, `--state-format`, `--image-*`) into a `add_hanoi_arguments(parser)` function. Keep `build_parser()` for backward-compatible standalone use.
+**Step 4.4: Backward compatibility and deprecation policy**
+
+Do not break existing automation/scripts in one release. Add compatibility aliases so current flat CLI patterns keep working during migration, emit deprecation warnings, and document removal timeline.
+- Release N: support both legacy and new CLI forms, warnings on legacy paths.
+- Release N+1: keep legacy with stronger warnings and migration examples.
+- Release N+2: remove legacy forms.
+
+**Step 4.5: Update `bench/hanoi.py` parser**
+
+Move Hanoi-specific flags (`--n-disks`, `--start-peg`, `--goal-peg`, `--prompt-variant`, `--tools-variant`, `--state-format`, `--image-*`) into an `add_hanoi_arguments(parser)` function that `BenchSpec.add_arguments` points to. Keep `build_parser()` as a convenience that composes the base parser + `add_hanoi_arguments()` for backward-compatible standalone use.
+
+**Step 4.6: Update config format documentation**
+
+Document that multi-game configs are the primary interface for reproducible benchmarks:
+
+```json
+{
+  "models": { "openrouter": ["openai/gpt-4.1-mini", "anthropic/claude-sonnet-4"] },
+  "out_dir": "artifacts/runs",
+  "games": {
+    "hanoi": {
+      "n_disks": [3, 4, 5],
+      "prompt_variants": ["minimal", "full"],
+      "tool_variants": ["move_only", "all_tools"],
+      "runs_per_variant": 5
+    },
+    "future_game": {
+      "game_specific_param": "value"
+    }
+  }
+}
+```
+
+Game-specific keys under `"games"` are opaque to the batch dispatcher -- they're passed as-is to the game's `batch_runner` via the `config` dict argument. Only the game's runner interprets them.
 
 ### Phase 5: Fix provider/image safety (F5)
 
