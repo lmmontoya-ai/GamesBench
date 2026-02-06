@@ -267,6 +267,8 @@ Create `games_bench/games/hanoi/adapter.py` that wraps `TowerOfHanoiEnv` + `Hano
 
 The hardcoded tool dispatch in `harness.py:27-42` moves into `HanoiAdapter.execute_tool()`.
 
+`HanoiAdapter` must expose enough surface for override callables to work. Currently `bench/hanoi.py` builds `state_formatter` lambdas that call `env.format_prompt_state(include_legal_moves=..., include_action_space=...)`. After the refactor, the `state_formatter: Callable[[GameAdapter], str]` override receives the adapter, so `HanoiAdapter.env` should be a public attribute (not private) so callers can access game-specific methods without reaching through internals.
+
 **Step 3.3: Refactor the harness**
 
 Rewrite `llm/harness.py:run_tool_calling_episode()` to accept `adapter: GameAdapter` instead of `env: TowerOfHanoiEnv`. Remove all Hanoi imports. The function becomes:
@@ -349,12 +351,33 @@ Replace `parser = hanoi_bench.build_parser()` with:
 
 This means `--help` on `games-bench run` shows only common flags + available game subcommands. `--help` on `games-bench run hanoi` shows Hanoi-specific flags. No flag pollution across games.
 
-**Step 4.4: Backward compatibility and deprecation policy**
+Verify with tests:
+- `games-bench run --help` and `games-bench run hanoi --help` expose the correct flag scopes.
+- Equivalent legacy and new CLI invocations produce identical `run_config.json`.
+- Output files remain schema-compatible (`episodes.jsonl`, `traces.jsonl`, `summary.json`).
+- Precedence/merge rules from Step 4.4 are covered.
 
-Do not break existing automation/scripts in one release. Add compatibility aliases so current flat CLI patterns keep working during migration, emit deprecation warnings, and document removal timeline.
-- Release N: support both legacy and new CLI forms, warnings on legacy paths.
-- Release N+1: keep legacy with stronger warnings and migration examples.
-- Release N+2: remove legacy forms.
+**Step 4.4: Define CLI behavior contract (precedence and conflicts)**
+
+Specify deterministic rules before implementation:
+- Mode selection:
+  - If `games-bench run <game>` is used, run single-game subcommand mode.
+  - Else if `--config` is present, run config-driven mode.
+  - Else error with actionable help.
+- Config merge precedence:
+  - Global CLI flags override top-level config keys (`provider`, `out_dir`, recording toggles, retries/timeouts).
+  - In single-game mode, game-specific CLI flags override `games.<game>` config keys.
+  - In config-driven multi-game mode (no subcommand), game-specific CLI flags are invalid and should fail fast.
+- Conflict resolution:
+  - Reject contradictory toggles (`--record` + `--no-record`, etc.) at parse time.
+  - Reject unknown game names early (before run startup).
+  - Reject subcommand game + mismatched `--game` filter.
+- Output contract:
+  - Preserve current run artifact structure and schema (`run_config.json`, `episodes.jsonl`, `traces.jsonl`, `summary.json`) for backward compatibility.
+
+Document this contract in CLI help and README so users can reason about behavior without reading source.
+
+Backward compatibility note: this is a pre-1.0 project with no published releases. Legacy flat-flag invocations (`games-bench run --n-disks 3,4` without a game subcommand) should emit a deprecation warning and be removed in the next minor release. No multi-release deprecation cycle is needed at this stage.
 
 **Step 4.5: Update `bench/hanoi.py` parser**
 
