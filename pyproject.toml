@@ -4,14 +4,16 @@ version = "0.1.0"
 description = "Benchmark environments for RL and LLM tool-calling research"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "openai>=2.16.0",
-]
+dependencies = []
+
+[project.optional-dependencies]
+llm = ["openai>=2.16.0"]
+viz = ["pillow"]
 
 [project.scripts]
 games-bench = "games_bench.bench.cli:main"
 
 [dependency-groups]
 dev = ["black==24.1.1", "pre-commit"]
-llm = ["openai"]
+llm = ["openai>=2.16.0"]
 viz = ["pillow"]

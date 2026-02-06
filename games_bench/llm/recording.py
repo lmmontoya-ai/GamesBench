@@ -16,6 +16,48 @@ class RecordingStep:
     totals: dict[str, int]
 
 
+def _count_action_outcome(
+    action: dict[str, Any] | None,
+    result: dict[str, Any],
+    *,
+    meta: dict[str, Any] | None = None,
+) -> tuple[int, int]:
+    """Return (move_delta, illegal_move_delta) for a tool result.
+
+    Current recordings are Hanoi-oriented. We only count mutating tools:
+      - *_move: ok=true => move, ok=false => illegal move
+      - *_step: use info.illegal_action when available
+    Query tools never affect move totals.
+    """
+
+    if isinstance(meta, dict):
+        if bool(meta.get("illegal_action")):
+            return (0, 1)
+        if bool(meta.get("state_mutating")):
+            return (1, 0)
+        if "illegal_action" in meta or "state_mutating" in meta:
+            return (0, 0)
+
+    name = action.get("name") if isinstance(action, dict) else None
+    if not isinstance(name, str):
+        return (0, 0)
+
+    ok = bool(result.get("ok", False))
+    if name.endswith("_move"):
+        return (1, 0) if ok else (0, 1)
+
+    if name.endswith("_step"):
+        info = result.get("info")
+        illegal_action = (
+            bool(info.get("illegal_action")) if isinstance(info, dict) else False
+        )
+        if illegal_action:
+            return (0, 1)
+        return (1, 0) if ok else (0, 1)
+
+    return (0, 0)
+
+
 def build_recording(
     *,
     events: list[dict[str, Any]],
@@ -77,11 +119,14 @@ def build_recording(
 
             tool_calls += 1
             result = event.get("result", {})
+            move_delta, illegal_delta = _count_action_outcome(
+                current_action,
+                result,
+                meta=event.get("meta"),
+            )
+            moves += move_delta
+            illegal_moves += illegal_delta
             ok = bool(result.get("ok", False))
-            if ok:
-                moves += 1
-            else:
-                illegal_moves += 1
 
             state_before = (
                 current_state_snapshot

@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import unittest
+from typing import Any
+
+from games_bench.llm.game_adapter import ToolExecution
+from games_bench.llm.harness import run_tool_calling_episode
+from games_bench.llm.providers import ProviderResult, ToolCall
+
+
+class DummyAdapter:
+    def __init__(self) -> None:
+        self._solved = False
+        self._moves = 0
+        self.executed: list[str] = []
+
+    def tool_schemas(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "dummy_move",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {},
+                },
+            },
+            {
+                "name": "dummy_noop",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {},
+                },
+            },
+        ]
+
+    def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
+        del arguments
+        self.executed.append(name)
+        if name == "dummy_move":
+            self._moves += 1
+            self._solved = True
+            return ToolExecution(
+                result={"ok": True, "state": {"moves": self._moves}},
+                meta={"state_mutating": True, "illegal_action": False},
+            )
+        return ToolExecution(
+            result={"ok": True, "state": {"moves": self._moves}},
+            meta={"state_mutating": False, "illegal_action": False},
+        )
+
+    def get_state_snapshot(self) -> dict[str, Any]:
+        return {"moves": self._moves}
+
+    def is_solved(self) -> bool:
+        return self._solved
+
+    def default_instructions(self) -> str:
+        return "Use tools."
+
+    def format_state(self) -> str:
+        return '{"moves":0}'
+
+    def episode_metrics(self) -> dict[str, Any]:
+        return {"move_count": self._moves}
+
+
+class MockProvider:
+    supports_images = False
+
+    def __init__(self, results: list[ProviderResult]) -> None:
+        self._results = list(results)
+
+    def next_tool_calls(
+        self,
+        *,
+        state_text: str,
+        tool_schemas: list[dict[str, Any]],
+        instructions: str,
+        state_image: dict[str, Any] | None = None,
+    ) -> ProviderResult:
+        del state_text, tool_schemas, instructions, state_image
+        if self._results:
+            return self._results.pop(0)
+        return ProviderResult(tool_calls=[], raw=None, error="No scripted response")
+
+
+class TestHarness(unittest.TestCase):
+    def test_runs_episode_with_adapter(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=5)
+        self.assertTrue(result.solved)
+        self.assertEqual(result.move_count, 1)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(result.illegal_moves, 0)
+        self.assertEqual(adapter.executed, ["dummy_move"])
+
+    def test_rejects_disallowed_tool(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=1,
+            allowed_tools=["dummy_noop"],
+        )
+        self.assertFalse(result.solved)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(result.illegal_moves, 1)
+        self.assertEqual(adapter.executed, [])
+
+    def test_stops_on_provider_error(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider([ProviderResult(tool_calls=[], raw=None, error="boom")])
+        result = run_tool_calling_episode(adapter, provider, max_turns=3)
+        self.assertFalse(result.solved)
+        self.assertEqual(result.tool_calls, 0)
+        self.assertEqual(result.illegal_moves, 0)
+
+    def test_validates_image_capability(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})]
+        )
+        with self.assertRaises(ValueError):
+            run_tool_calling_episode(
+                adapter,
+                provider,
+                state_image_renderer=lambda _adapter: {"mime_type": "image/png"},
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

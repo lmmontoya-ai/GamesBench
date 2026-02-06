@@ -118,8 +118,13 @@ wheels = [
 name = "games-bench"
 version = "0.1.0"
 source = { virtual = "." }
-dependencies = [
+
+[package.optional-dependencies]
+llm = [
     { name = "openai" },
+]
+viz = [
+    { name = "pillow" },
 ]
 
 [package.dev-dependencies]
@@ -135,14 +140,18 @@ viz = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "openai", specifier = ">=2.16.0" }]
+requires-dist = [
+    { name = "openai", marker = "extra == 'llm'", specifier = ">=2.16.0" },
+    { name = "pillow", marker = "extra == 'viz'" },
+]
+provides-extras = ["llm", "viz"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = "==24.1.1" },
     { name = "pre-commit" },
 ]
-llm = [{ name = "openai" }]
+llm = [{ name = "openai", specifier = ">=2.16.0" }]
 viz = [{ name = "pillow" }]
 
 [[package]]

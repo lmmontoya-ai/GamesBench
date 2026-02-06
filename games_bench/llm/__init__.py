@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from .game_adapter import GameAdapter, ToolExecution
 from .harness import EpisodeResult, run_tool_calling_episode
-from games_bench.games.hanoi.prompts import default_instructions
 from .recording import build_recording
 from .providers import (
     CLIProvider,
@@ -17,10 +17,11 @@ __all__ = [
     "CLIProvider",
     "CodexCLIProvider",
     "EpisodeResult",
+    "GameAdapter",
     "OpenAIResponsesProvider",
     "OpenRouterProvider",
+    "ToolExecution",
     "ToolCall",
-    "default_instructions",
     "build_recording",
     "run_tool_calling_episode",
 ]
