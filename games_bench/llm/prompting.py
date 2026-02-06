@@ -1,17 +1,9 @@
-"""Backward-compatible prompt helpers for Hanoi."""
+"""Deprecated module.
+
+Prompt templates are game-specific and now live under
+`games_bench.games.<game>.prompts`.
+"""
 
 from __future__ import annotations
 
-from games_bench.games.hanoi.prompts import (  # re-export
-    IMAGE_INSTRUCTIONS_SUFFIX,
-    default_instructions,
-    format_instructions,
-    with_image_instructions,
-)
-
-__all__ = [
-    "IMAGE_INSTRUCTIONS_SUFFIX",
-    "default_instructions",
-    "format_instructions",
-    "with_image_instructions",
-]
+__all__: list[str] = []

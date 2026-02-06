@@ -9,6 +9,12 @@ Framework-agnostic benchmark environments for reinforcement learning (RL) and LL
 - Run a quick demo: `uv run games-bench rl`
 - Optional: set API keys in `.env`
 
+If installing with `pip` instead of `uv`:
+- Core (no LLM SDKs): `pip install games-bench`
+- LLM providers: `pip install 'games-bench[llm]'`
+- Visualization helpers: `pip install 'games-bench[viz]'`
+- Everything optional: `pip install 'games-bench[llm,viz]'`
+
 ### Repo layout
 
 - `games_bench/`: Python package (games + benchmark harnesses)
@@ -56,7 +62,7 @@ Claude Code (generic CLI): uv run games-bench provider --provider cli --cli-cmd 
 
 Run multiple episodes across variants (n_disks, prompts, allowed tools) and write JSONL traces:
 
-- `uv run games-bench run --provider openrouter --n-disks 3,4 --prompt-variant minimal --prompt-variant full --tools-variant move_only --tools-variant all_tools --runs-per-variant 5`
+- `uv run games-bench run hanoi --provider openrouter --n-disks 3,4 --prompt-variant minimal --prompt-variant full --tools-variant move_only --tools-variant all_tools --runs-per-variant 5`
 - Or use `configs/hanoi.json` to run a list of models:
   - `uv run games-bench run --provider openrouter --config configs/hanoi.json`
   - Limit to a game: `uv run games-bench run --provider openrouter --config configs/hanoi.json --game hanoi`

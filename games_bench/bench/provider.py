@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import asdict
 from typing import Any
 
+from games_bench.bench.hanoi_adapter import HanoiGameAdapter
 from games_bench.games.hanoi.env import TowerOfHanoiEnv
 from games_bench.llm import (
     CLIProvider,
@@ -79,8 +81,9 @@ def main() -> int:
     env = TowerOfHanoiEnv(
         n_disks=args.n_disks, record_history=True, illegal_action_behavior="penalize"
     )
-    result = run_tool_calling_episode(env, provider, max_turns=args.max_turns)
-    print(json.dumps(result.__dict__, indent=2, sort_keys=True))
+    adapter = HanoiGameAdapter(env)
+    result = run_tool_calling_episode(adapter, provider, max_turns=args.max_turns)
+    print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0
 
 

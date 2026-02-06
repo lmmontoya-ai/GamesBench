@@ -9,9 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from games_bench.bench.common import add_common_batch_arguments
+from games_bench.bench.hanoi_adapter import HanoiGameAdapter
 from games_bench.games.hanoi.env import TowerOfHanoiEnv, tool_schemas
 from games_bench.games.hanoi.prompts import (
-    IMAGE_INSTRUCTIONS_SUFFIX,
     default_instructions,
     format_instructions,
     with_image_instructions,
@@ -247,6 +248,8 @@ def _write_raw_generations(
         if event_type == "tool_result":
             if current is not None:
                 current["tool_result"] = event.get("result")
+                if event.get("meta") is not None:
+                    current["tool_result_meta"] = event.get("meta")
                 out_file.write(json.dumps(current) + "\n")
                 current = None
                 turn_index += 1
@@ -272,10 +275,18 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             "cost_avg": None,
         }
 
-    solved = [e for e in episodes if e["solved"]]
-    move_ratios = [
-        e["move_count"] / e["optimal_steps"] for e in solved if e["optimal_steps"] > 0
-    ]
+    def _as_float(value: Any) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    solved = [e for e in episodes if e.get("solved")]
+    move_ratios: list[float] = []
+    for episode in solved:
+        move_count = _as_float(episode.get("move_count"))
+        optimal_steps = _as_float(episode.get("optimal_steps"))
+        if move_count is not None and optimal_steps is not None and optimal_steps > 0:
+            move_ratios.append(move_count / optimal_steps)
 
     def _mean(values: list[float]) -> float | None:
         if not values:
@@ -318,10 +329,28 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "episodes": len(episodes),
         "solved": len(solved),
         "solve_rate": len(solved) / len(episodes),
-        "avg_moves": _mean([e["move_count"] for e in episodes]),
+        "avg_moves": _mean(
+            [
+                value
+                for value in (_as_float(e.get("move_count")) for e in episodes)
+                if value is not None
+            ]
+        ),
         "avg_move_ratio": _mean(move_ratios),
-        "avg_illegal_moves": _mean([e["illegal_moves"] for e in episodes]),
-        "avg_tool_calls": _mean([e["tool_calls"] for e in episodes]),
+        "avg_illegal_moves": _mean(
+            [
+                value
+                for value in (_as_float(e.get("illegal_moves")) for e in episodes)
+                if value is not None
+            ]
+        ),
+        "avg_tool_calls": _mean(
+            [
+                value
+                for value in (_as_float(e.get("tool_calls")) for e in episodes)
+                if value is not None
+            ]
+        ),
         "token_totals": token_totals if token_count else None,
         "token_avgs": token_avgs,
         "cost_total": cost_total if cost_count else None,
@@ -329,53 +358,11 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Batch benchmark for tool-calling Hanoi."
-    )
-    parser.add_argument(
-        "--provider",
-        choices=["openrouter", "openai", "codex", "cli"],
-        required=True,
-        help="Which provider to use.",
-    )
-    parser.add_argument("--model", help="Model name for OpenAI/OpenRouter.")
-    parser.add_argument(
-        "--config", help="Path to JSON config (models + optional defaults)."
-    )
+def add_hanoi_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-disks", action="append", default=None)
     parser.add_argument("--start-peg", type=int, default=None)
     parser.add_argument("--goal-peg", type=int, default=None)
     parser.add_argument("--runs-per-variant", type=int, default=None)
-    parser.add_argument("--max-turns", type=int, default=None)
-    parser.add_argument("--out-dir", default=None)
-    parser.add_argument("--timeout-s", type=int, default=300)
-    parser.add_argument(
-        "--provider-retries",
-        type=int,
-        default=None,
-        help="Retry count for provider 5xx errors (default from config or 2).",
-    )
-    parser.add_argument(
-        "--provider-backoff",
-        type=float,
-        default=None,
-        help="Base backoff (seconds) for provider retries (default from config or 1.0).",
-    )
-    parser.add_argument("--cli-cmd", help="Command to run for provider=cli.")
-    parser.add_argument(
-        "--no-stdin",
-        action="store_true",
-        help="Do not pass prompt via stdin for provider=cli.",
-    )
-    parser.add_argument("--codex-path", default="codex")
-    parser.add_argument(
-        "--codex-arg",
-        action="append",
-        dest="codex_args",
-        default=[],
-        help="Extra args to pass to codex exec (repeatable).",
-    )
     parser.add_argument(
         "--prompt-variant",
         action="append",
@@ -397,36 +384,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allowed-tools",
         help="Comma-separated list of tool names (override tools variant).",
-    )
-    parser.add_argument(
-        "--record-provider-raw",
-        action="store_true",
-        help="Include raw provider responses in traces.",
-    )
-    parser.add_argument(
-        "--no-record-provider-raw",
-        action="store_true",
-        help="Disable raw provider responses in traces.",
-    )
-    parser.add_argument(
-        "--record",
-        action="store_true",
-        help="Write per-episode recordings (states/actions) into run directory.",
-    )
-    parser.add_argument(
-        "--no-record",
-        action="store_true",
-        help="Disable recordings even if config enables them.",
-    )
-    parser.add_argument(
-        "--record-raw",
-        action="store_true",
-        help="Write raw generations (prompt + model output + tool result) to JSONL.",
-    )
-    parser.add_argument(
-        "--no-record-raw",
-        action="store_true",
-        help="Disable raw generations logging even if config enables it.",
     )
     parser.add_argument(
         "--state-format",
@@ -452,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not label pegs in rendered images.",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Batch benchmark for tool-calling Hanoi."
+    )
+    add_common_batch_arguments(parser)
+    add_hanoi_arguments(parser)
     return parser
 
 
@@ -472,62 +437,76 @@ def run_batch(
     game_name: str = "hanoi",
 ) -> list[Path]:
     config = config or {}
-    models = _resolve_models(args.provider, config, args.model)
+    provider_name = getattr(args, "provider", None)
+    if not provider_name:
+        raise SystemExit("Missing required argument: --provider")
+    model_arg = getattr(args, "model", None)
+    models = _resolve_models(provider_name, config, model_arg)
     if not models:
         raise SystemExit("No models provided. Use --model or config.json.")
 
+    n_disks_arg = getattr(args, "n_disks", None)
     n_disks_list = (
-        _parse_int_list(args.n_disks)
-        if args.n_disks is not None
+        _parse_int_list(n_disks_arg)
+        if n_disks_arg is not None
         else _parse_int_list([str(x) for x in config.get("n_disks", [3])])
     )
+    runs_per_variant_arg = getattr(args, "runs_per_variant", None)
     runs_per_variant = (
-        args.runs_per_variant
-        if args.runs_per_variant is not None
+        runs_per_variant_arg
+        if runs_per_variant_arg is not None
         else int(config.get("runs_per_variant", 3))
     )
+    max_turns_arg = getattr(args, "max_turns", None)
     max_turns = (
-        args.max_turns
-        if args.max_turns is not None
+        max_turns_arg
+        if max_turns_arg is not None
         else int(config.get("max_turns", 200))
     )
-    out_dir_base = args.out_dir or config.get("out_dir", "artifacts/runs")
+    out_dir_base = getattr(args, "out_dir", None) or config.get(
+        "out_dir", "artifacts/runs"
+    )
     out_dir_base = _resolve_out_dir_base(out_dir_base, game_name)
+    start_peg_arg = getattr(args, "start_peg", None)
     start_peg = (
-        args.start_peg
-        if args.start_peg is not None
-        else int(config.get("start_peg", 0))
+        start_peg_arg if start_peg_arg is not None else int(config.get("start_peg", 0))
     )
+    goal_peg_arg = getattr(args, "goal_peg", None)
     goal_peg = (
-        args.goal_peg if args.goal_peg is not None else int(config.get("goal_peg", 2))
+        goal_peg_arg if goal_peg_arg is not None else int(config.get("goal_peg", 2))
     )
+    provider_retries_arg = getattr(args, "provider_retries", None)
     provider_retries = (
-        args.provider_retries
-        if args.provider_retries is not None
+        provider_retries_arg
+        if provider_retries_arg is not None
         else int(config.get("provider_retries", 2))
     )
+    provider_backoff_arg = getattr(args, "provider_backoff", None)
     provider_backoff = (
-        args.provider_backoff
-        if args.provider_backoff is not None
+        provider_backoff_arg
+        if provider_backoff_arg is not None
         else float(config.get("provider_backoff", 1.0))
     )
+    prompt_file_arg = getattr(args, "prompt_file", None)
     prompt_variants = (
-        _load_prompt_variants(args.prompt_file)
-        if args.prompt_file
+        _load_prompt_variants(prompt_file_arg)
+        if prompt_file_arg
         else DEFAULT_PROMPT_VARIANTS
     )
 
-    selected_prompt_names = args.prompt_variants or config.get(
+    selected_prompt_names = getattr(args, "prompt_variants", None) or config.get(
         "prompt_variants", ["minimal"]
     )
     selected_prompt_variants = [prompt_variants[name] for name in selected_prompt_names]
     tool_variants = DEFAULT_TOOL_VARIANTS
-    selected_tool_names = args.tool_variants or config.get(
+    selected_tool_names = getattr(args, "tool_variants", None) or config.get(
         "tool_variants", ["move_only"]
     )
     selected_tool_variants = [tool_variants[name] for name in selected_tool_names]
 
-    allowed_tools_override = args.allowed_tools or config.get("allowed_tools")
+    allowed_tools_override = getattr(args, "allowed_tools", None) or config.get(
+        "allowed_tools"
+    )
     if allowed_tools_override:
         selected_tool_variants = [
             ToolVariant(
@@ -538,16 +517,16 @@ def run_batch(
             )
         ]
 
-    if args.record_provider_raw:
+    if getattr(args, "record_provider_raw", False):
         record_provider_raw = True
-    elif args.no_record_provider_raw:
+    elif getattr(args, "no_record_provider_raw", False):
         record_provider_raw = False
     else:
         record_provider_raw = bool(config.get("record_provider_raw", False))
 
-    if args.record_raw:
+    if getattr(args, "record_raw", False):
         record_raw = True
-    elif args.no_record_raw:
+    elif getattr(args, "no_record_raw", False):
         record_raw = False
     else:
         record_raw = bool(config.get("record_raw", False))
@@ -555,24 +534,29 @@ def run_batch(
     if record_raw:
         record_provider_raw = True
 
-    if args.record:
+    if getattr(args, "record", False):
         record = True
-    elif args.no_record:
+    elif getattr(args, "no_record", False):
         record = False
     else:
         record = bool(config.get("record", False))
 
-    state_format = args.state_format or config.get("state_format", "text")
-    image_size = _parse_size(args.image_size or config.get("image_size", "640x360"))
-    if args.image_labels:
+    state_format = getattr(args, "state_format", None) or config.get(
+        "state_format", "text"
+    )
+    image_size = _parse_size(
+        getattr(args, "image_size", None) or config.get("image_size", "640x360")
+    )
+    if getattr(args, "image_labels", False):
         image_labels = True
-    elif args.no_image_labels:
+    elif getattr(args, "no_image_labels", False):
         image_labels = False
     else:
         image_labels = bool(config.get("image_labels", True))
-    image_background = args.image_background or config.get("image_background", "white")
+    image_background = getattr(args, "image_background", None) or config.get(
+        "image_background", "white"
+    )
 
-    provider_name = args.provider
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     run_dirs: list[Path] = []
@@ -580,6 +564,13 @@ def run_batch(
         args.provider_retries = provider_retries
         args.provider_backoff = provider_backoff
         provider = _build_provider(args, model_name)
+        if state_format in {"image", "both"} and not getattr(
+            provider, "supports_images", False
+        ):
+            raise SystemExit(
+                f"Provider '{provider_name}' does not support state_format='{state_format}'. "
+                "Use --state-format text or a provider with image support."
+            )
         model_slug = model_name.replace("/", "_").replace(":", "_")
         run_id = f"{timestamp}_{provider_name}_{model_slug}"
 
@@ -653,6 +644,7 @@ def run_batch(
                                 record_history=True,
                                 illegal_action_behavior="penalize",
                             )
+                            adapter = HanoiGameAdapter(env)
                             instructions = format_instructions(
                                 prompt_variant.instructions,
                                 start_peg=env.start_peg,
@@ -661,24 +653,24 @@ def run_batch(
                             if state_format in {"image", "both"}:
                                 instructions = with_image_instructions(instructions)
                             state_formatter = (
-                                lambda e, pv=prompt_variant: e.format_prompt_state(
+                                lambda a, pv=prompt_variant: a.env.format_prompt_state(
                                     include_legal_moves=pv.include_legal_moves,
                                     include_action_space=pv.include_action_space,
                                 )
                             )
                             if state_format == "image":
-                                state_formatter = lambda _e: "State image attached."
+                                state_formatter = lambda _a: "State image attached."
                             state_image_renderer = None
                             if state_format in {"image", "both"}:
 
                                 def state_image_renderer_payload(
-                                    e,
+                                    a,
                                     size=image_size,
                                     labels=image_labels,
                                     background=image_background,
                                 ):
                                     image = render_hanoi_env_image(
-                                        e,
+                                        a.env,
                                         size=size,
                                         label_pegs=labels,
                                         background=background,
@@ -687,7 +679,7 @@ def run_batch(
 
                                 state_image_renderer = state_image_renderer_payload
                             result = run_tool_calling_episode(
-                                env,
+                                adapter,
                                 provider,
                                 max_turns=max_turns,
                                 instructions=instructions,
@@ -727,12 +719,16 @@ def run_batch(
                                 "run_idx": run_idx,
                                 "provider": provider_name,
                                 "model": model_name,
-                                "n_disks": n_disks,
+                                "n_disks": result.game_metrics.get("n_disks", n_disks),
                                 "prompt_variant": prompt_variant.name,
                                 "tools_variant": tool_variant.name,
                                 "solved": result.solved,
-                                "move_count": result.move_count,
-                                "optimal_steps": result.optimal_steps,
+                                "move_count": result.game_metrics.get(
+                                    "move_count", result.move_count
+                                ),
+                                "optimal_steps": result.game_metrics.get(
+                                    "optimal_steps", result.optimal_steps
+                                ),
                                 "illegal_moves": result.illegal_moves,
                                 "tool_calls": result.tool_calls,
                                 "usage": result.usage,

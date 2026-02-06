@@ -11,6 +11,7 @@ class BenchSpec:
     name: str
     description: str
     batch_runner: Callable[[argparse.Namespace, dict[str, Any]], list[Path]]
+    add_arguments: Callable[[argparse.ArgumentParser], None] | None = None
 
 
 _REGISTRY: dict[str, BenchSpec] = {}
@@ -40,5 +41,6 @@ def load_builtin_benchmarks() -> None:
             name="hanoi",
             description="Tower of Hanoi",
             batch_runner=hanoi_bench.run_batch,
+            add_arguments=hanoi_bench.add_hanoi_arguments,
         )
     )

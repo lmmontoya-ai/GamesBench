@@ -4,42 +4,41 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from games_bench.games.hanoi.env import HanoiToolbox, TowerOfHanoiEnv, tool_schemas
-from games_bench.games.hanoi.prompts import default_instructions
-
-from .providers import ProviderResult, ToolCall
+from .game_adapter import GameAdapter
+from .providers import ProviderResult
 
 
 @dataclass(frozen=True, slots=True)
 class EpisodeResult:
     solved: bool
-    n_disks: int
-    move_count: int
-    optimal_steps: int
+    game_metrics: dict[str, Any]
     illegal_moves: int
     tool_calls: int
-    history: list[tuple[int, int]]
     events: list[dict[str, Any]]
     usage: dict[str, float] | None
     cost: float | None
 
+    @property
+    def move_count(self) -> int:
+        value = self.game_metrics.get("move_count", 0)
+        return int(value) if isinstance(value, (int, float)) else 0
 
-def _execute_tool(toolbox: HanoiToolbox, call: ToolCall) -> dict[str, Any]:
-    name = call.name
-    args = call.arguments
-    if name == "hanoi_get_state":
-        return toolbox.get_state()
-    if name == "hanoi_move":
-        return toolbox.move(**args)
-    if name == "hanoi_reset":
-        return toolbox.reset(**args)
-    if name == "hanoi_is_solved":
-        return toolbox.is_solved()
-    if name == "hanoi_get_legal_moves":
-        return toolbox.get_legal_moves()
-    if name == "hanoi_step":
-        return toolbox.step(args.get("action"))
-    return {"ok": False, "error": f"unknown tool: {name}"}
+    @property
+    def n_disks(self) -> int | None:
+        value = self.game_metrics.get("n_disks")
+        return int(value) if isinstance(value, (int, float)) else None
+
+    @property
+    def optimal_steps(self) -> int | None:
+        value = self.game_metrics.get("optimal_steps")
+        return int(value) if isinstance(value, (int, float)) else None
+
+    @property
+    def history(self) -> list[Any]:
+        value = self.game_metrics.get("history")
+        if isinstance(value, list):
+            return value
+        return []
 
 
 def _accumulate_usage(total: dict[str, float], usage: dict[str, Any] | None) -> None:
@@ -59,19 +58,17 @@ def _accumulate_usage(total: dict[str, float], usage: dict[str, Any] | None) -> 
 
 
 def run_tool_calling_episode(
-    env: TowerOfHanoiEnv,
+    adapter: GameAdapter,
     provider: Any,
     *,
     max_turns: int = 200,
-    tool_prefix: str = "hanoi",
     instructions: str | None = None,
-    state_formatter: Callable[[TowerOfHanoiEnv], str] | None = None,
-    state_image_renderer: Callable[[TowerOfHanoiEnv], dict[str, Any]] | None = None,
+    state_formatter: Callable[[GameAdapter], str] | None = None,
+    state_image_renderer: Callable[[GameAdapter], dict[str, Any]] | None = None,
     allowed_tools: list[str] | None = None,
     record_provider_raw: bool = False,
 ) -> EpisodeResult:
-    toolbox = HanoiToolbox(env)
-    tools = tool_schemas(tool_prefix=tool_prefix)
+    tools = adapter.tool_schemas()
     if allowed_tools is not None:
         if not allowed_tools:
             raise ValueError("allowed_tools must not be empty")
@@ -80,12 +77,8 @@ def run_tool_calling_episode(
     else:
         allowed_set = None
 
-    instructions = instructions or default_instructions()
-    state_formatter = state_formatter or (
-        lambda e: e.format_prompt_state(
-            include_legal_moves=False, include_action_space=False
-        )
-    )
+    instructions = instructions or adapter.default_instructions()
+    state_formatter = state_formatter or (lambda a: a.format_state())
     if state_image_renderer and not getattr(provider, "supports_images", False):
         raise ValueError("Provider does not support image inputs.")
 
@@ -97,11 +90,11 @@ def run_tool_calling_episode(
     cost_seen = False
 
     for _ in range(max_turns):
-        if env.is_solved():
+        if adapter.is_solved():
             break
-        state_text = state_formatter(env)
-        state_image = state_image_renderer(env) if state_image_renderer else None
-        snapshot = env.get_state().to_dict()
+        state_text = state_formatter(adapter)
+        state_image = state_image_renderer(adapter) if state_image_renderer else None
+        snapshot = adapter.get_state_snapshot()
         try:
             state_payload = json.loads(state_text)
         except json.JSONDecodeError:
@@ -147,24 +140,26 @@ def run_tool_calling_episode(
         tool_calls += 1
         if allowed_set is not None and call.name not in allowed_set:
             tool_result = {"ok": False, "error": f"tool not allowed: {call.name}"}
+            tool_meta = {"state_mutating": False, "illegal_action": True}
             illegal_moves += 1
         else:
-            tool_result = _execute_tool(toolbox, call)
-            if not tool_result.get("ok", False):
+            execution = adapter.execute_tool(call.name, call.arguments)
+            tool_result = execution.result
+            tool_meta = execution.meta
+            if tool_meta.get("illegal_action", False) or not tool_result.get(
+                "ok", False
+            ):
                 illegal_moves += 1
         events.append(
             {"type": "tool_call", "name": call.name, "arguments": call.arguments}
         )
-        events.append({"type": "tool_result", "result": tool_result})
+        events.append({"type": "tool_result", "result": tool_result, "meta": tool_meta})
 
     return EpisodeResult(
-        solved=env.is_solved(),
-        n_disks=env.n_disks,
-        move_count=env.move_count,
-        optimal_steps=env.optimal_steps(),
+        solved=adapter.is_solved(),
+        game_metrics=adapter.episode_metrics(),
         illegal_moves=illegal_moves,
         tool_calls=tool_calls,
-        history=list(env.history),
         events=events,
         usage=usage_totals or None,
         cost=cost_total if cost_seen else None,
