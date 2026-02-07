@@ -46,6 +46,12 @@ from .prompts import (
     instructions_for_variant,
     with_image_instructions,
 )
+from .vision import (
+    StateImage,
+    render_sokoban_env_image,
+    render_sokoban_image,
+    render_sokoban_state_image,
+)
 
 __all__ = [
     "ACTION_INDEX",
@@ -66,6 +72,7 @@ __all__ = [
     "SokobanLevel",
     "SokobanState",
     "SokobanToolbox",
+    "StateImage",
     "assert_level_governance_valid",
     "compute_dead_squares",
     "count_levels_in_xsb",
@@ -78,6 +85,9 @@ __all__ = [
     "load_level_by_id",
     "load_level_metadata",
     "load_level_set",
+    "render_sokoban_env_image",
+    "render_sokoban_image",
+    "render_sokoban_state_image",
     "default_instructions",
     "instructions_for_variant",
     "parse_xsb_levels",

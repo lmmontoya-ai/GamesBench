@@ -66,6 +66,8 @@ class TestSokobanPrompts(unittest.TestCase):
         with_image = with_image_instructions(base)
         self.assertNotEqual(base, with_image)
         self.assertEqual(with_image, with_image_instructions(with_image))
+        self.assertIn("dark gray tiles = walls", with_image)
+        self.assertIn("blue token = player on goal", with_image)
 
     def test_prompt_variant_respects_custom_tool_prefix(self) -> None:
         legal = instructions_for_variant("with_legal_moves", tool_prefix="custom")
