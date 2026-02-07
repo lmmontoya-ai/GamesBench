@@ -194,12 +194,15 @@ def is_deadlocked(
     boxes: frozenset[Position],
     dead_squares: frozenset[Position] | None = None,
 ) -> bool:
-    dead_squares_resolved = dead_squares or compute_dead_squares(
-        width=width,
-        height=height,
-        walls=walls,
-        goals=goals,
-    )
+    if dead_squares is None:
+        dead_squares_resolved = compute_dead_squares(
+            width=width,
+            height=height,
+            walls=walls,
+            goals=goals,
+        )
+    else:
+        dead_squares_resolved = dead_squares
     if has_dead_square_deadlock(
         boxes=boxes,
         goals=goals,

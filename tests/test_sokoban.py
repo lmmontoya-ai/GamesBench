@@ -5,6 +5,7 @@ import unittest
 from games_bench.games.sokoban import (
     ACTION_INDEX,
     compute_dead_squares,
+    has_dead_square_deadlock,
     has_freeze_deadlock,
     IllegalMoveError,
     InvalidActionError,
@@ -402,6 +403,73 @@ class TestSokobanDeadlocks(unittest.TestCase):
         env = SokobanEnv(level)
         self.assertTrue(env.is_deadlocked())
 
+    def test_has_dead_square_deadlock_helper(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@ .#
+#$  #
+#####
+"""
+        )
+        dead_squares = compute_dead_squares(
+            width=level.width,
+            height=level.height,
+            walls=level.walls,
+            goals=level.goals,
+        )
+        self.assertTrue(
+            has_dead_square_deadlock(
+                boxes=level.boxes_start,
+                goals=level.goals,
+                dead_squares=dead_squares,
+            )
+        )
+
+    def test_goals_in_corners_are_not_dead_squares(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@  #
+#.$ #
+#####
+"""
+        )
+        dead_squares = compute_dead_squares(
+            width=level.width,
+            height=level.height,
+            walls=level.walls,
+            goals=level.goals,
+        )
+        self.assertNotIn((2, 1), dead_squares)
+
+    def test_compute_dead_squares_marks_dead_edge_cells(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#@$   #
+#   . #
+#######
+"""
+        )
+        dead_squares = compute_dead_squares(
+            width=level.width,
+            height=level.height,
+            walls=level.walls,
+            goals=level.goals,
+        )
+        self.assertIn((1, 2), dead_squares)
+
+    def test_solvable_nontrivial_state_not_deadlocked(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#     #
+# $@ ##
+#     #
+# .   #
+#######
+"""
+        )
+        env = SokobanEnv(level)
+        self.assertFalse(env.is_deadlocked())
+
     def test_env_ignores_frozen_box_on_goal(self) -> None:
         level = _level_from_xsb(
             """#####
@@ -453,6 +521,114 @@ class TestSokobanDeadlocks(unittest.TestCase):
         self.assertEqual(reward, -3.0)
         self.assertTrue(info["deadlocked"])
         self.assertNotIn("deadlock_terminated", info)
+
+    def test_push_creates_deadlock(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#     #
+# $@ ##
+#     #
+# .   #
+#######
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=True,
+            deadlock_penalty=-2.0,
+        )
+        self.assertFalse(env.is_deadlocked())
+        _state, reward, done, info = env.step("left")
+        self.assertTrue(done)
+        self.assertEqual(reward, -2.0)
+        self.assertTrue(info["deadlocked"])
+        self.assertTrue(info["deadlock_terminated"])
+
+    def test_detect_deadlocks_false_disables_deadlock_handling(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#     #
+# $@ ##
+#     #
+# .   #
+#######
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=False,
+            terminal_on_deadlock=True,
+            deadlock_penalty=-2.0,
+        )
+        _state, reward, done, info = env.step("left")
+        self.assertFalse(done)
+        self.assertEqual(reward, 0.0)
+        self.assertFalse(info["deadlocked"])
+        self.assertNotIn("deadlock_terminated", info)
+
+    def test_undo_clears_deadlock_from_push(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#     #
+# $@ ##
+#     #
+# .   #
+#######
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=False,
+        )
+        self.assertFalse(env.is_deadlocked())
+        _state, _reward, done, info = env.step("left")
+        self.assertFalse(done)
+        self.assertTrue(info["deadlocked"])
+        self.assertTrue(env.is_deadlocked())
+        env.undo()
+        self.assertFalse(env.is_deadlocked())
+
+    def test_illegal_parse_action_terminates_when_state_deadlocked(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@ .#
+#$  #
+#####
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=True,
+            illegal_action_behavior="penalize",
+        )
+        _state, _reward, done, info = env.step("diagonal")
+        self.assertTrue(info["illegal_action"])
+        self.assertTrue(info["deadlocked"])
+        self.assertTrue(done)
+        self.assertTrue(info["deadlock_terminated"])
+
+    def test_illegal_move_terminates_when_state_deadlocked(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@ .#
+#$  #
+#####
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=True,
+            illegal_action_behavior="penalize",
+        )
+        _state, _reward, done, info = env.step("left")
+        self.assertTrue(info["illegal_action"])
+        self.assertTrue(info["deadlocked"])
+        self.assertTrue(done)
+        self.assertTrue(info["deadlock_terminated"])
 
     def test_freeze_deadlock_detected(self) -> None:
         walls = {
