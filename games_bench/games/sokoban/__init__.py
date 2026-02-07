@@ -1,21 +1,63 @@
-"""Sokoban game assets and governance utilities."""
+"""Sokoban game assets, environment, and governance utilities."""
 
 from __future__ import annotations
 
+from .env import (
+    ACTION_INDEX,
+    ACTION_SPACE,
+    DIRECTION_DELTAS,
+    Direction,
+    IllegalMoveError,
+    InvalidActionError,
+    InvalidLevelError,
+    LevelSet,
+    SokobanEnv,
+    SokobanError,
+    SokobanLevel,
+    SokobanState,
+    SokobanToolbox,
+    tool_schemas,
+)
 from .level_loader import (
     LevelMetadata,
     LevelSetManifest,
     assert_level_governance_valid,
     count_levels_in_xsb,
     default_levels_dir,
+    list_bundled_level_sets,
+    load_bundled_level_set,
+    load_level_by_id,
+    load_level_metadata,
+    load_level_set,
+    parse_xsb_levels,
     validate_level_governance,
 )
 
 __all__ = [
+    "ACTION_INDEX",
+    "ACTION_SPACE",
+    "DIRECTION_DELTAS",
+    "Direction",
+    "IllegalMoveError",
+    "InvalidActionError",
+    "InvalidLevelError",
     "LevelMetadata",
+    "LevelSet",
     "LevelSetManifest",
+    "SokobanEnv",
+    "SokobanError",
+    "SokobanLevel",
+    "SokobanState",
+    "SokobanToolbox",
     "assert_level_governance_valid",
     "count_levels_in_xsb",
     "default_levels_dir",
+    "list_bundled_level_sets",
+    "load_bundled_level_set",
+    "load_level_by_id",
+    "load_level_metadata",
+    "load_level_set",
+    "parse_xsb_levels",
+    "tool_schemas",
     "validate_level_governance",
 ]
