@@ -12,37 +12,50 @@ def _read(name: str) -> str:
 DEFAULT_TEMPLATE = _read("default.txt")
 IMAGE_INSTRUCTIONS_SUFFIX = _read("image_suffix.txt")
 
-_LEGAL_MOVES_SUFFIX = """
-Planning aid:
-- Use `sokoban_get_legal_moves` when selecting between alternatives.
-- Avoid actions that are legal but likely to create deadlocks.
-""".strip()
-
 _DEADLOCK_WARNINGS_SUFFIX = """
 Deadlock policy:
 - A deadlocked state may terminate the episode.
 - Treat corner and wall traps as high risk unless they are goals.
 """.strip()
 
-_PROMPT_VARIANT_SUFFIXES = {
-    "minimal": "",
-    "with_legal_moves": _LEGAL_MOVES_SUFFIX,
-    "with_deadlock_warnings": _DEADLOCK_WARNINGS_SUFFIX,
-    "full": f"{_LEGAL_MOVES_SUFFIX}\n\n{_DEADLOCK_WARNINGS_SUFFIX}",
-}
+_PROMPT_VARIANTS = (
+    "minimal",
+    "with_legal_moves",
+    "with_deadlock_warnings",
+    "full",
+)
 
 
-def default_instructions() -> str:
-    return DEFAULT_TEMPLATE
+def _legal_moves_suffix(tool_prefix: str) -> str:
+    return (
+        "Planning aid:\n"
+        f"- Use `{tool_prefix}_get_legal_moves` when selecting between alternatives.\n"
+        "- Avoid actions that are legal but likely to create deadlocks."
+    )
 
 
-def instructions_for_variant(name: str = "minimal") -> str:
-    suffix = _PROMPT_VARIANT_SUFFIXES.get(name)
-    if suffix is None:
-        available = ", ".join(sorted(_PROMPT_VARIANT_SUFFIXES))
+def default_instructions(*, tool_prefix: str = "sokoban") -> str:
+    return instructions_for_variant("minimal", tool_prefix=tool_prefix)
+
+
+def instructions_for_variant(
+    name: str = "minimal", *, tool_prefix: str = "sokoban"
+) -> str:
+    if name not in _PROMPT_VARIANTS:
+        available = ", ".join(sorted(_PROMPT_VARIANTS))
         raise ValueError(
             f"unknown Sokoban prompt variant: {name!r} (available: {available})"
         )
+    legal_moves_suffix = _legal_moves_suffix(tool_prefix)
+    if name == "minimal":
+        suffix = ""
+    elif name == "with_legal_moves":
+        suffix = legal_moves_suffix
+    elif name == "with_deadlock_warnings":
+        suffix = _DEADLOCK_WARNINGS_SUFFIX
+    else:
+        suffix = f"{legal_moves_suffix}\n\n{_DEADLOCK_WARNINGS_SUFFIX}"
+
     if not suffix:
         return DEFAULT_TEMPLATE
     return f"{DEFAULT_TEMPLATE}\n\n{suffix}"

@@ -44,6 +44,8 @@ class TestSokobanPrompts(unittest.TestCase):
         minimal = instructions_for_variant("minimal")
         self.assertEqual(minimal, default_instructions())
         self.assertIn("exactly one tool call", minimal)
+        for symbol in ("`#`", "` `", "`@`", "`+`", "`$`", "`*`", "`.`"):
+            self.assertIn(symbol, minimal)
 
         legal = instructions_for_variant("with_legal_moves")
         self.assertIn("sokoban_get_legal_moves", legal)
@@ -64,6 +66,11 @@ class TestSokobanPrompts(unittest.TestCase):
         with_image = with_image_instructions(base)
         self.assertNotEqual(base, with_image)
         self.assertEqual(with_image, with_image_instructions(with_image))
+
+    def test_prompt_variant_respects_custom_tool_prefix(self) -> None:
+        legal = instructions_for_variant("with_legal_moves", tool_prefix="custom")
+        self.assertIn("custom_get_legal_moves", legal)
+        self.assertNotIn("sokoban_get_legal_moves", legal)
 
 
 class TestSokobanGameAdapter(unittest.TestCase):
@@ -109,6 +116,7 @@ class TestSokobanGameAdapter(unittest.TestCase):
         adapter.execute_tool("sokoban_move", {"direction": "right"})
         successful = adapter.execute_tool("sokoban_undo", {})
         self.assertTrue(successful.result["ok"])
+        self.assertEqual(successful.meta["action_kind"], "undo")
         self.assertTrue(successful.meta["state_mutating"])
         self.assertFalse(successful.meta["illegal_action"])
         self.assertFalse(successful.meta["counts_as_move"])
@@ -145,7 +153,8 @@ class TestSokobanGameAdapter(unittest.TestCase):
         execution = adapter.execute_tool("sokoban_missing", {})
         self.assertFalse(execution.result["ok"])
         self.assertIn("unknown tool", execution.result["error"])
-        self.assertTrue(execution.meta["illegal_action"])
+        self.assertEqual(execution.meta["action_kind"], "query")
+        self.assertFalse(execution.meta["illegal_action"])
         self.assertFalse(execution.meta["state_mutating"])
         self.assertFalse(execution.meta["counts_as_move"])
 
@@ -175,9 +184,16 @@ class TestSokobanGameAdapter(unittest.TestCase):
         ):
             self.assertIn(key, metrics)
         self.assertEqual(metrics["level_id"], level.level_id)
+        self.assertEqual(metrics["n_boxes"], 1)
         self.assertEqual(
             metrics["grid_size"], {"width": level.width, "height": level.height}
         )
+        self.assertEqual(metrics["move_count"], 1)
+        self.assertEqual(metrics["push_count"], 0)
+        self.assertEqual(metrics["boxes_on_goals"], 0)
+        self.assertFalse(metrics["deadlocked"])
+        self.assertFalse(metrics["known_optimal"])
+        self.assertEqual(len(metrics["history"]), 1)
 
     def test_default_instructions_override(self) -> None:
         level = _level_from_xsb(
@@ -200,6 +216,43 @@ class TestSokobanGameAdapter(unittest.TestCase):
         text = adapter.format_state()
         self.assertIn("Board", text)
         self.assertIn("Boxes on goals", text)
+
+    def test_get_state_snapshot(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        adapter = SokobanGameAdapter(SokobanEnv(level))
+        snapshot = adapter.get_state_snapshot()
+        self.assertEqual(snapshot["player"], [1, 1])
+        self.assertEqual(snapshot["n_boxes"], 1)
+
+    def test_custom_tool_prefix_routing(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        adapter = SokobanGameAdapter(SokobanEnv(level), tool_prefix="custom")
+        execution = adapter.execute_tool("custom_move", {"direction": "right"})
+        self.assertTrue(execution.result["ok"])
+        self.assertEqual(execution.meta["action_kind"], "move")
+
+    def test_move_tool_missing_direction_is_illegal(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        adapter = SokobanGameAdapter(SokobanEnv(level))
+        execution = adapter.execute_tool("sokoban_move", {})
+        self.assertFalse(execution.result["ok"])
+        self.assertTrue(execution.meta["illegal_action"])
+        self.assertFalse(execution.meta["counts_as_move"])
 
     def test_harness_does_not_count_undo_failure_as_illegal(self) -> None:
         level = _level_from_xsb(

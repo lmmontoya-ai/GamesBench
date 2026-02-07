@@ -28,6 +28,8 @@ class HanoiGameAdapter:
     def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
         mutating = False
         illegal_action = False
+        action_kind = "query"
+        counts_as_move = False
 
         if name == f"{self._tool_prefix}_get_state":
             result = self._toolbox.get_state()
@@ -35,9 +37,13 @@ class HanoiGameAdapter:
             result = self._toolbox.move(**arguments)
             mutating = bool(result.get("ok", False))
             illegal_action = not mutating
+            action_kind = "move"
+            counts_as_move = mutating
         elif name == f"{self._tool_prefix}_reset":
             result = self._toolbox.reset(**arguments)
             mutating = bool(result.get("ok", False))
+            action_kind = "query"
+            counts_as_move = False
         elif name == f"{self._tool_prefix}_is_solved":
             result = self._toolbox.is_solved()
         elif name == f"{self._tool_prefix}_get_legal_moves":
@@ -49,6 +55,8 @@ class HanoiGameAdapter:
                 bool(info.get("illegal_action")) if isinstance(info, dict) else False
             )
             mutating = bool(result.get("ok", False)) and not illegal_action
+            action_kind = "move"
+            counts_as_move = mutating
         else:
             result = {"ok": False, "error": f"unknown tool: {name}"}
             illegal_action = True
@@ -58,6 +66,8 @@ class HanoiGameAdapter:
             meta={
                 "state_mutating": mutating,
                 "illegal_action": illegal_action,
+                "action_kind": action_kind,
+                "counts_as_move": counts_as_move,
             },
         )
 
