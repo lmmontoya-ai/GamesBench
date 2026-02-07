@@ -17,12 +17,12 @@ If installing with `pip` instead of `uv`:
 
 ### Repo layout
 
-- `games_bench/`: Python package (games + benchmark harnesses)
-- `games_bench/games/<game>/`: per-game envs, prompts, renderers
-- `games_bench/bench/`: runnable benchmarks/demos (batch, review, render, provider)
-- `apps/renderer-hanoi/`: Three.js playback renderer
-- `configs/`: sample benchmark configs
-- `artifacts/`: run outputs (`runs/`, `renders/`, `reviews/`)
+- `games_bench/games/` — game engine (envs, adapters, prompts, rendering); standalone, no LLM deps
+- `games_bench/llm/` — game-agnostic LLM harness (providers, episode loop, recording)
+- `games_bench/bench/` — benchmark orchestration (CLI, batch runner, registries, demo entrypoints)
+- `apps/renderer-hanoi/` — Three.js playback renderer
+- `configs/` — sample benchmark configs
+- `artifacts/` — run outputs (`runs/`, `renders/`, `reviews/`)
 
 Legacy `examples/` entrypoints are kept as thin wrappers for backward compatibility.
 
@@ -123,6 +123,23 @@ For vision benchmarks or automation, the renderer exposes:
 - `window.hanoiRenderer.setState(pegs, nDisks)`
 - `window.hanoiRenderer.setRecordingStep(index)`
 - `window.hanoiRenderer.exportPNG()`
+
+### Standalone environment usage
+
+The game environments work without any LLM or benchmark code:
+
+```python
+from games_bench.games.hanoi import TowerOfHanoiEnv
+
+env = TowerOfHanoiEnv(n_disks=3, shaping_weight=0.1)
+state = env.reset()
+
+for step in range(100):
+    action = my_agent.act(state)
+    state, reward, done, info = env.step(action)
+    if done:
+        break
+```
 
 ### Tower of Hanoi
 

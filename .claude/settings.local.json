@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -m pytest:*)",
       "Bash(python -m unittest discover:*)",
-      "Bash(python -m unittest:*)"
+      "Bash(python -m unittest:*)",
+      "WebSearch"
     ]
   }
 }
