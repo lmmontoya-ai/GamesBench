@@ -31,6 +31,18 @@ def _count_action_outcome(
     """
 
     if isinstance(meta, dict):
+        if "counts_as_move" in meta:
+            move_delta = 1 if bool(meta.get("counts_as_move")) else 0
+            illegal_delta = 1 if bool(meta.get("illegal_action")) else 0
+            return (move_delta, illegal_delta)
+        if "illegal_action" in meta:
+            if bool(meta.get("illegal_action")):
+                return (0, 1)
+            if bool(meta.get("state_mutating")):
+                return (1, 0)
+            if "state_mutating" in meta:
+                return (0, 0)
+            return (0, 0)
         if bool(meta.get("illegal_action")):
             return (0, 1)
         if bool(meta.get("state_mutating")):

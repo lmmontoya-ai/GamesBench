@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .adapter import SokobanGameAdapter
 from .deadlock import (
     compute_dead_squares,
     has_dead_square_deadlock,
@@ -38,12 +39,21 @@ from .level_loader import (
     parse_xsb_levels,
     validate_level_governance,
 )
+from .prompts import (
+    DEFAULT_TEMPLATE,
+    IMAGE_INSTRUCTIONS_SUFFIX,
+    default_instructions,
+    instructions_for_variant,
+    with_image_instructions,
+)
 
 __all__ = [
     "ACTION_INDEX",
     "ACTION_SPACE",
+    "DEFAULT_TEMPLATE",
     "DIRECTION_DELTAS",
     "Direction",
+    "IMAGE_INSTRUCTIONS_SUFFIX",
     "IllegalMoveError",
     "InvalidActionError",
     "InvalidLevelError",
@@ -51,6 +61,7 @@ __all__ = [
     "LevelSet",
     "LevelSetManifest",
     "SokobanEnv",
+    "SokobanGameAdapter",
     "SokobanError",
     "SokobanLevel",
     "SokobanState",
@@ -67,7 +78,10 @@ __all__ = [
     "load_level_by_id",
     "load_level_metadata",
     "load_level_set",
+    "default_instructions",
+    "instructions_for_variant",
     "parse_xsb_levels",
     "tool_schemas",
     "validate_level_governance",
+    "with_image_instructions",
 ]

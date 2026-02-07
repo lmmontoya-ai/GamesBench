@@ -1,0 +1,15 @@
+You are solving Sokoban.
+
+Goal:
+- Put every box (`$`) onto a goal (`.`). A box on a goal is `*`.
+
+Rules:
+- You can move one tile per action: up, down, left, right.
+- You can push exactly one adjacent box if the next tile is free.
+- You cannot pull boxes.
+- Deadlocks are usually irreversible. Avoid pushing boxes into corners or against walls unless a goal is there.
+
+Tool policy:
+- Make exactly one tool call per turn.
+- Prefer legal, progress-making moves.
+- If uncertain, query state before committing to risky pushes.

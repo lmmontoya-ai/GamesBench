@@ -457,6 +457,38 @@ class TestSokobanDeadlocks(unittest.TestCase):
         )
         self.assertIn((1, 2), dead_squares)
 
+    def test_compute_dead_squares_marks_right_corner_orientations(self) -> None:
+        cases = [
+            (
+                "top-right",
+                """#####
+# @$#
+# . #
+#####
+""",
+                (1, 3),
+            ),
+            (
+                "bottom-right",
+                """#####
+# @ #
+# .$#
+#####
+""",
+                (2, 3),
+            ),
+        ]
+        for case_name, xsb, corner_pos in cases:
+            with self.subTest(case=case_name):
+                level = _level_from_xsb(xsb)
+                dead_squares = compute_dead_squares(
+                    width=level.width,
+                    height=level.height,
+                    walls=level.walls,
+                    goals=level.goals,
+                )
+                self.assertIn(corner_pos, dead_squares)
+
     def test_solvable_nontrivial_state_not_deadlocked(self) -> None:
         level = _level_from_xsb(
             """#######
@@ -631,48 +663,44 @@ class TestSokobanDeadlocks(unittest.TestCase):
         self.assertTrue(info["deadlock_terminated"])
 
     def test_freeze_deadlock_detected(self) -> None:
-        walls = {
-            *((0, col) for col in range(7)),
-            *((6, col) for col in range(7)),
-            *((row, 0) for row in range(7)),
-            *((row, 6) for row in range(7)),
-            (2, 3),
-            (4, 3),
-            (3, 1),
-            (3, 4),
-        }
-        boxes = frozenset({(3, 2), (3, 3)})
-        goals = frozenset({(1, 1), (5, 5)})
+        level = _level_from_xsb(
+            """#######
+#.@   #
+#  #  #
+##$$# #
+#  #  #
+#    .#
+#######
+"""
+        )
         self.assertTrue(
             has_freeze_deadlock(
-                width=7,
-                height=7,
-                walls=frozenset(walls),
-                boxes=boxes,
-                goals=goals,
+                width=level.width,
+                height=level.height,
+                walls=level.walls,
+                boxes=level.boxes_start,
+                goals=level.goals,
             )
         )
 
     def test_freeze_detection_ignores_goal_box(self) -> None:
-        walls = {
-            *((0, col) for col in range(7)),
-            *((6, col) for col in range(7)),
-            *((row, 0) for row in range(7)),
-            *((row, 6) for row in range(7)),
-            (2, 3),
-            (4, 3),
-            (3, 1),
-            (3, 4),
-        }
-        boxes = frozenset({(3, 2), (3, 3)})
-        goals = frozenset({(3, 3), (1, 1)})
+        level = _level_from_xsb(
+            """#######
+#.@   #
+#  #  #
+##$*# #
+#  #  #
+#     #
+#######
+"""
+        )
         self.assertFalse(
             has_freeze_deadlock(
-                width=7,
-                height=7,
-                walls=frozenset(walls),
-                boxes=boxes,
-                goals=goals,
+                width=level.width,
+                height=level.height,
+                walls=level.walls,
+                boxes=level.boxes_start,
+                goals=level.goals,
             )
         )
 

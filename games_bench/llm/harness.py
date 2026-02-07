@@ -140,15 +140,21 @@ def run_tool_calling_episode(
         tool_calls += 1
         if allowed_set is not None and call.name not in allowed_set:
             tool_result = {"ok": False, "error": f"tool not allowed: {call.name}"}
-            tool_meta = {"state_mutating": False, "illegal_action": True}
+            tool_meta = {
+                "state_mutating": False,
+                "illegal_action": True,
+                "action_kind": "query",
+                "counts_as_move": False,
+            }
             illegal_moves += 1
         else:
             execution = adapter.execute_tool(call.name, call.arguments)
             tool_result = execution.result
             tool_meta = execution.meta
-            if tool_meta.get("illegal_action", False) or not tool_result.get(
-                "ok", False
-            ):
+            if "illegal_action" in tool_meta:
+                if bool(tool_meta.get("illegal_action")):
+                    illegal_moves += 1
+            elif not tool_result.get("ok", False):
                 illegal_moves += 1
         events.append(
             {"type": "tool_call", "name": call.name, "arguments": call.arguments}

@@ -111,6 +111,46 @@ class TestRecording(unittest.TestCase):
         self.assertEqual(summary["total_moves"], 1)
         self.assertEqual(summary["total_illegal_moves"], 1)
 
+    def test_counts_as_move_meta_controls_move_count(self) -> None:
+        s0 = _state([[3, 2, 1], [], []])
+        events = _base_events(s0) + [
+            {"type": "tool_call", "name": "custom_tool", "arguments": {}},
+            {
+                "type": "tool_result",
+                "result": {"ok": False, "state": s0, "error": "custom"},
+                "meta": {
+                    "state_mutating": False,
+                    "illegal_action": False,
+                    "counts_as_move": True,
+                },
+            },
+        ]
+        recording = build_recording(events=events, metadata={})
+        summary = recording["summary"]
+        self.assertEqual(summary["total_tool_calls"], 1)
+        self.assertEqual(summary["total_moves"], 1)
+        self.assertEqual(summary["total_illegal_moves"], 0)
+
+    def test_non_illegal_failure_meta_not_counted_as_illegal(self) -> None:
+        s0 = _state([[3, 2, 1], [], []])
+        events = _base_events(s0) + [
+            {"type": "tool_call", "name": "custom_tool", "arguments": {}},
+            {
+                "type": "tool_result",
+                "result": {"ok": False, "state": s0, "error": "cannot undo"},
+                "meta": {
+                    "state_mutating": False,
+                    "illegal_action": False,
+                    "counts_as_move": False,
+                },
+            },
+        ]
+        recording = build_recording(events=events, metadata={})
+        summary = recording["summary"]
+        self.assertEqual(summary["total_tool_calls"], 1)
+        self.assertEqual(summary["total_moves"], 0)
+        self.assertEqual(summary["total_illegal_moves"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
