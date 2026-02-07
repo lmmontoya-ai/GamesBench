@@ -6,8 +6,7 @@ import os
 from dataclasses import asdict
 from typing import Any
 
-from games_bench.bench.hanoi_adapter import HanoiGameAdapter
-from games_bench.games.hanoi.env import TowerOfHanoiEnv
+from games_bench.bench.game_loader import build_env_and_adapter, parse_env_kwargs
 from games_bench.llm import (
     CLIProvider,
     CodexCLIProvider,
@@ -46,18 +45,37 @@ def _build_provider(args: argparse.Namespace) -> Any:
     raise SystemExit(f"Unknown provider: {args.provider}")
 
 
+def _build_env_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    if args.game == "hanoi":
+        env_kwargs.setdefault("record_history", True)
+        env_kwargs.setdefault("illegal_action_behavior", "penalize")
+        if args.n_disks is not None:
+            env_kwargs["n_disks"] = args.n_disks
+    return env_kwargs
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Tool-calling benchmark runner (Tower of Hanoi)."
-    )
+    parser = argparse.ArgumentParser(description="Tool-calling benchmark runner.")
     parser.add_argument(
         "--provider",
         choices=["openrouter", "openai", "codex", "cli"],
         required=True,
         help="Which provider to use.",
     )
+    parser.add_argument("--game", default="hanoi", help="Registered game name.")
+    parser.add_argument(
+        "--env-kwargs",
+        default=None,
+        help="JSON object of kwargs for the selected game's env factory.",
+    )
     parser.add_argument("--model", help="Model name for OpenAI/OpenRouter.")
-    parser.add_argument("--n-disks", type=int, default=3)
+    parser.add_argument(
+        "--n-disks",
+        type=int,
+        default=None,
+        help="Hanoi convenience flag (overrides env_kwargs.n_disks).",
+    )
     parser.add_argument("--max-turns", type=int, default=200)
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument("--cli-cmd", help="Command to run for provider=cli.")
@@ -77,11 +95,10 @@ def main() -> int:
 
     args = parser.parse_args()
     provider = _build_provider(args)
-
-    env = TowerOfHanoiEnv(
-        n_disks=args.n_disks, record_history=True, illegal_action_behavior="penalize"
+    _, adapter = build_env_and_adapter(
+        args.game,
+        env_kwargs=_build_env_kwargs(args),
     )
-    adapter = HanoiGameAdapter(env)
     result = run_tool_calling_episode(adapter, provider, max_turns=args.max_turns)
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0

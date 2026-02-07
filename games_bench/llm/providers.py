@@ -156,6 +156,14 @@ def _tool_schemas_to_openai_responses(
     ]
 
 
+def _missing_openai_dependency_message(exc: Exception) -> str:
+    return (
+        "Missing dependency: openai SDK. Install with "
+        "pip install 'games-bench[llm]' or uv sync --group llm. "
+        f"ImportError: {exc}"
+    )
+
+
 class OpenRouterProvider:
     """OpenRouter provider using OpenAI-compatible Chat Completions."""
 
@@ -195,7 +203,11 @@ class OpenRouterProvider:
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover
-            return ProviderResult([], raw=None, error=f"Missing dependency: {exc}")
+            return ProviderResult(
+                [],
+                raw=None,
+                error=_missing_openai_dependency_message(exc),
+            )
 
         headers = {}
         if self.http_referer:
@@ -351,7 +363,11 @@ class OpenAIResponsesProvider:
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover
-            return ProviderResult([], raw=None, error=f"Missing dependency: {exc}")
+            return ProviderResult(
+                [],
+                raw=None,
+                error=_missing_openai_dependency_message(exc),
+            )
 
         client = OpenAI(api_key=self.api_key)
         tools = _tool_schemas_to_openai_responses(tool_schemas)

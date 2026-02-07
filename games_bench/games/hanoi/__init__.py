@@ -28,6 +28,7 @@ from .prompts import (
     format_instructions,
     with_image_instructions,
 )
+from .adapter import HanoiGameAdapter
 
 __all__ = [
     "ACTION_SPACE",
@@ -52,4 +53,5 @@ __all__ = [
     "default_instructions",
     "format_instructions",
     "with_image_instructions",
+    "HanoiGameAdapter",
 ]
