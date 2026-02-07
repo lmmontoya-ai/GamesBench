@@ -46,7 +46,11 @@ def _run_single_game(
 
     config = load_config(args.config) if args.config else {}
     global_defaults, games_map = normalize_games_config(config, default_game=game_name)
-    game_config = merge_dicts(global_defaults, games_map.get(game_name, {}))
+    bench_defaults = benchmark.default_config() if benchmark.default_config else {}
+    game_config = merge_dicts(
+        bench_defaults,
+        merge_dicts(global_defaults, games_map.get(game_name, {})),
+    )
     game_run_dirs = benchmark.batch_runner(args, game_config)
     return [str(p) for p in game_run_dirs]
 
@@ -74,8 +78,12 @@ def _run_config_mode(argv: list[str]) -> list[str]:
 
     run_dirs: list[str] = []
     for game_name in selected_games:
-        game_config = merge_dicts(global_defaults, games_map.get(game_name, {}))
         benchmark = get_benchmark(game_name)
+        bench_defaults = benchmark.default_config() if benchmark.default_config else {}
+        game_config = merge_dicts(
+            bench_defaults,
+            merge_dicts(global_defaults, games_map.get(game_name, {})),
+        )
         game_run_dirs = benchmark.batch_runner(args, game_config)
         run_dirs.extend([str(p) for p in game_run_dirs])
     return run_dirs

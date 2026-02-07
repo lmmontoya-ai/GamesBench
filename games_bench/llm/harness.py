@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .game_adapter import GameAdapter
+from games_bench.games.adapter import GameAdapter
 from .providers import ProviderResult
 
 

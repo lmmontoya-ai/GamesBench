@@ -1,137 +1,84 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
+from dataclasses import asdict
 from typing import Any
 
-from games_bench.games.hanoi.env import HanoiToolbox, TowerOfHanoiEnv, tool_schemas
-from games_bench.games.hanoi.prompts import default_instructions
+from games_bench.bench.game_loader import build_env_and_adapter, parse_env_kwargs
+from games_bench.llm import OpenAIResponsesProvider, run_tool_calling_episode
 
 
-def _to_openai_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "name": s["name"],
-            "description": s.get("description", ""),
-            "parameters": s["parameters"],
-        }
-        for s in schemas
-    ]
+def _build_env_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    if args.game == "hanoi":
+        env_kwargs.setdefault("record_history", True)
+        env_kwargs.setdefault("illegal_action_behavior", "penalize")
+        if args.n_disks is not None:
+            env_kwargs["n_disks"] = args.n_disks
+    return env_kwargs
 
 
-def _model_dump(item: Any) -> Any:
-    if isinstance(item, dict):
-        return item
-    dump = getattr(item, "model_dump", None)
-    if callable(dump):
-        return dump()
-    return item
+def _move_tool_names(adapter: Any) -> list[str]:
+    names: list[str] = []
+    for schema in adapter.tool_schemas():
+        name = schema.get("name")
+        if isinstance(name, str) and name.endswith("_move"):
+            names.append(name)
+    return names
 
 
 def main() -> int:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover
-        raise SystemExit(
-            "Missing dependency. Install with: uv sync --group llm\n"
-            f"ImportError: {exc}"
-        )
-
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("Set OPENAI_API_KEY to run this example.")
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-    n_disks = int(os.environ.get("HANOI_N_DISKS", "3"))
-    max_moves = int(os.environ.get("HANOI_MAX_MOVES", "200"))
-
-    env = TowerOfHanoiEnv(
-        n_disks=n_disks, record_history=True, illegal_action_behavior="penalize"
+    parser = argparse.ArgumentParser(
+        description="OpenAI tool-calling demo for a registered game."
     )
-    toolbox = HanoiToolbox(env)
+    parser.add_argument("--game", default="hanoi", help="Registered game name.")
+    parser.add_argument(
+        "--env-kwargs",
+        default=None,
+        help="JSON object of kwargs for the selected game's env factory.",
+    )
+    parser.add_argument(
+        "--n-disks",
+        type=int,
+        default=3,
+        help="Hanoi convenience flag (overrides env_kwargs.n_disks).",
+    )
+    parser.add_argument("--max-turns", type=int, default=200)
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+        help="OpenAI model name (default: OPENAI_MODEL or gpt-4.1-mini).",
+    )
+    args = parser.parse_args()
 
-    # Keep the toolset minimal to encourage "move-only" behavior.
-    schemas = [
-        s for s in tool_schemas(tool_prefix="hanoi") if s["name"] == "hanoi_move"
-    ]
-    tools = _to_openai_tools(schemas)
+    provider = OpenAIResponsesProvider(model=args.model)
+    _env, adapter = build_env_and_adapter(args.game, env_kwargs=_build_env_kwargs(args))
+
+    move_tools = _move_tool_names(adapter)
+    if not move_tools:
+        raise SystemExit(
+            f"No *_move tool found for game '{args.game}'. Cannot run move-only demo."
+        )
 
     instructions = (
-        default_instructions()
-        + "\nUse ONLY the tool `hanoi_move` to make moves. Call exactly one tool per turn."
+        adapter.default_instructions()
+        + f"\nUse ONLY the tool `{move_tools[0]}` to make moves. "
+        "Call exactly one tool per turn."
     )
 
-    # We keep an input transcript so the model sees tool results (updated state).
-    transcript: list[Any] = [
-        {
-            "role": "user",
-            "content": env.format_prompt_state(
-                include_legal_moves=False, include_action_space=False, compact_json=True
-            ),
-        }
-    ]
-
-    client = OpenAI()
-
-    illegal_moves = 0
-    while not env.is_solved() and env.move_count < max_moves:
-        response = client.responses.create(
-            model=model,
-            instructions=instructions,
-            tools=tools,
-            tool_choice="required",
-            parallel_tool_calls=False,
-            input=[_model_dump(x) for x in transcript],
-        )
-
-        output_items = [_model_dump(x) for x in getattr(response, "output", [])]
-        transcript.extend(output_items)
-
-        function_calls = [
-            x
-            for x in output_items
-            if isinstance(x, dict) and x.get("type") == "function_call"
-        ]
-        if not function_calls:
-            # Should be rare with tool_choice="required", but handle gracefully.
-            break
-
-        for call in function_calls:
-            if call.get("name") != "hanoi_move":
-                result = {
-                    "ok": False,
-                    "error": f"unexpected tool call: {call.get('name')}",
-                }
-            else:
-                args = json.loads(call.get("arguments", "{}"))
-                result = toolbox.move(
-                    from_peg=args.get("from_peg"), to_peg=args.get("to_peg")
-                )
-                if not result.get("ok", False):
-                    illegal_moves += 1
-
-            transcript.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call.get("call_id"),
-                    "output": json.dumps(result),
-                }
-            )
-
-    print(
-        json.dumps(
-            {
-                "solved": env.is_solved(),
-                "n_disks": env.n_disks,
-                "move_count": env.move_count,
-                "optimal_steps": env.optimal_steps(),
-                "illegal_moves": illegal_moves,
-                "history": env.history,
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    result = run_tool_calling_episode(
+        adapter,
+        provider,
+        max_turns=args.max_turns,
+        instructions=instructions,
+        allowed_tools=[move_tools[0]],
     )
+    print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0
 
 

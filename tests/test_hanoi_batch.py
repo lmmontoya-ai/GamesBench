@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
 import unittest
 
 from games_bench.bench.hanoi import run_batch
@@ -44,6 +45,45 @@ class TestHanoiBatch(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             run_batch(args, config={}, game_name="hanoi")
         self.assertIn("does not support state_format", str(ctx.exception))
+
+    def test_run_batch_does_not_mutate_retry_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="cli",
+                model=None,
+                config=None,
+                max_turns=1,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd='python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                n_disks=["1"],
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=1,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+            )
+            run_batch(args, config={}, game_name="hanoi")
+            self.assertIsNone(args.provider_retries)
+            self.assertIsNone(args.provider_backoff)
 
 
 if __name__ == "__main__":

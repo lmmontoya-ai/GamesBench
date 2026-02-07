@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .game_adapter import GameAdapter, ToolExecution
+from games_bench.games.adapter import GameAdapter, ToolExecution
 from .harness import EpisodeResult, run_tool_calling_episode
 from .recording import build_recording
 from .providers import (

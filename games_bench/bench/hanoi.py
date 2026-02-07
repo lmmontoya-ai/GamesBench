@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from games_bench.bench.common import add_common_batch_arguments
-from games_bench.bench.hanoi_adapter import HanoiGameAdapter
+from games_bench.games.hanoi.adapter import HanoiGameAdapter
 from games_bench.games.hanoi.env import TowerOfHanoiEnv, tool_schemas
 from games_bench.games.hanoi.prompts import (
     default_instructions,
@@ -85,6 +85,31 @@ DEFAULT_TOOL_VARIANTS = {
 }
 
 
+def default_hanoi_config() -> dict[str, Any]:
+    return {
+        "n_disks": [3],
+        "runs_per_variant": 3,
+        "max_turns": 200,
+        "start_peg": 0,
+        "goal_peg": 2,
+        "prompt_variants": ["minimal"],
+        "tool_variants": ["move_only"],
+        "state_format": "text",
+        "image_size": "640x360",
+        "image_labels": True,
+        "image_background": "white",
+        "record": False,
+        "record_raw": False,
+        "record_provider_raw": False,
+        "provider_retries": 2,
+        "provider_backoff": 1.0,
+    }
+
+
+def build_hanoi_adapter(env: TowerOfHanoiEnv, **kwargs: Any) -> HanoiGameAdapter:
+    return HanoiGameAdapter(env, **kwargs)
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -92,13 +117,31 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _build_provider(args: argparse.Namespace, model: str | None) -> Any:
+def _build_provider(
+    args: argparse.Namespace,
+    model: str | None,
+    *,
+    provider_retries: int | None = None,
+    provider_backoff: float | None = None,
+) -> Any:
+    retries = provider_retries
+    if retries is None:
+        retries = getattr(args, "provider_retries", 2)
+    if retries is None:
+        retries = 2
+
+    backoff = provider_backoff
+    if backoff is None:
+        backoff = getattr(args, "provider_backoff", 1.0)
+    if backoff is None:
+        backoff = 1.0
+
     if args.provider == "openrouter":
         model = model or _require_env("OPENROUTER_MODEL")
         return OpenRouterProvider(
             model=model,
-            max_retries=args.provider_retries,
-            retry_backoff_s=args.provider_backoff,
+            max_retries=int(retries),
+            retry_backoff_s=float(backoff),
         )
     if args.provider == "openai":
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
@@ -561,9 +604,12 @@ def run_batch(
 
     run_dirs: list[Path] = []
     for model_name in models:
-        args.provider_retries = provider_retries
-        args.provider_backoff = provider_backoff
-        provider = _build_provider(args, model_name)
+        provider = _build_provider(
+            args,
+            model_name,
+            provider_retries=provider_retries,
+            provider_backoff=provider_backoff,
+        )
         if state_format in {"image", "both"} and not getattr(
             provider, "supports_images", False
         ):

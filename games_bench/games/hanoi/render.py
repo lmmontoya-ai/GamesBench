@@ -12,23 +12,31 @@ def _load_recording(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _safe_path_part(value: Any, *, fallback: str = "unknown") -> str:
+    text = str(value).strip().replace("/", "_").replace("\\", "_")
+    if text in {"", ".", ".."}:
+        return fallback
+    return text
+
+
 def _extract_run_parts(run_dir: Path) -> tuple[str, str, str]:
-    parts = run_dir.parts
-    if len(parts) >= 3:
-        return (parts[-3], parts[-2], parts[-1])
     run_config_path = run_dir / "run_config.json"
     if run_config_path.exists():
         try:
             run_config = json.loads(run_config_path.read_text())
         except json.JSONDecodeError:
             run_config = {}
-        provider = str(run_config.get("provider", "unknown"))
-        model = (
-            str(run_config.get("model", "unknown")).replace("/", "_").replace(":", "_")
-        )
-        run_id = str(run_config.get("run_id", run_dir.name))
+        provider = _safe_path_part(run_config.get("provider", "unknown"))
+        model = _safe_path_part(run_config.get("model", "unknown"))
+        run_id = _safe_path_part(run_config.get("run_id", run_dir.name))
         return (provider, model, run_id)
-    return ("unknown", "unknown", run_dir.name)
+
+    provider = _safe_path_part(run_dir.parent.parent.name)
+    model = _safe_path_part(run_dir.parent.name)
+    run_id = _safe_path_part(run_dir.name, fallback="recording")
+    if provider == "unknown" or model == "unknown":
+        return ("unknown", "unknown", run_id)
+    return (provider, model, run_id)
 
 
 def _normalized_steps(recording: dict[str, Any]) -> list[dict[str, Any]]:

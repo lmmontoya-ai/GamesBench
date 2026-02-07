@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import json
 
-from games_bench.games.hanoi.env import HanoiToolbox, TowerOfHanoiEnv, tool_schemas
+from games_bench.bench.game_loader import build_env_and_adapter, parse_env_kwargs
 
 
 def _print(obj: object) -> None:
@@ -27,16 +28,39 @@ def _read_json(prompt: str) -> dict:
         return data
 
 
-def main() -> int:
-    env = TowerOfHanoiEnv(
-        n_disks=3,
-        record_history=True,
-        illegal_action_behavior="penalize",
-    )
-    tools = HanoiToolbox(env)
-    max_turns = 200
+def _build_env_kwargs(args: argparse.Namespace) -> dict:
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    if args.game == "hanoi":
+        env_kwargs.setdefault("record_history", True)
+        env_kwargs.setdefault("illegal_action_behavior", "penalize")
+        if args.n_disks is not None:
+            env_kwargs["n_disks"] = args.n_disks
+    return env_kwargs
 
-    schemas = tool_schemas(tool_prefix="hanoi")
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Interactive manual tool loop for a registered game."
+    )
+    parser.add_argument("--game", default="hanoi", help="Registered game name.")
+    parser.add_argument(
+        "--env-kwargs",
+        default=None,
+        help="JSON object of kwargs for the selected game's env factory.",
+    )
+    parser.add_argument(
+        "--n-disks",
+        type=int,
+        default=None,
+        help="Hanoi convenience flag (overrides env_kwargs.n_disks).",
+    )
+    parser.add_argument("--max-turns", type=int, default=200)
+    args = parser.parse_args()
+
+    _env, adapter = build_env_and_adapter(args.game, env_kwargs=_build_env_kwargs(args))
+    max_turns = args.max_turns
+
+    schemas = adapter.tool_schemas()
     _print("Tool schemas (paste into your tool-calling framework if needed):")
     _print(json.dumps(schemas, indent=2))
     _print("")
@@ -50,7 +74,7 @@ def main() -> int:
     try:
         turns = 0
         while True:
-            if env.is_solved():
+            if adapter.is_solved():
                 _print("Solved!")
                 break
             if turns >= max_turns:
@@ -58,11 +82,7 @@ def main() -> int:
                 break
 
             _print("State:")
-            _print(
-                env.format_prompt_state(
-                    include_legal_moves=False, include_action_space=False
-                )
-            )
+            _print(adapter.format_state())
             _print("")
 
             call = _read_json("tool_call_json> ")
@@ -76,20 +96,7 @@ def main() -> int:
                 _print("Tool call must have an object field 'arguments'.")
                 continue
 
-            if name == "hanoi_get_state":
-                result = tools.get_state()
-            elif name == "hanoi_move":
-                result = tools.move(**arguments)
-            elif name == "hanoi_reset":
-                result = tools.reset(**arguments)
-            elif name == "hanoi_is_solved":
-                result = tools.is_solved()
-            elif name == "hanoi_get_legal_moves":
-                result = tools.get_legal_moves()
-            elif name == "hanoi_step":
-                result = tools.step(arguments.get("action"))
-            else:
-                result = {"ok": False, "error": f"unknown tool: {name}"}
+            result = adapter.execute_tool(name, arguments).result
 
             _print("Tool result:")
             _print(json.dumps(result, indent=2, sort_keys=True))
@@ -97,9 +104,8 @@ def main() -> int:
     except KeyboardInterrupt:
         _print("\nExiting.")
 
-    _print(
-        f"turns={turns} move_count={env.move_count} optimal={env.optimal_steps()} solved={env.is_solved()}"
-    )
+    metrics = adapter.episode_metrics()
+    _print(f"turns={turns} solved={adapter.is_solved()} metrics={json.dumps(metrics)}")
     return 0
 
 
