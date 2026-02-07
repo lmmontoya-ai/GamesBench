@@ -196,6 +196,18 @@ def tool_schemas(*, tool_prefix: str = "sokoban") -> list[dict[str, Any]]:
             "xsb",
         ],
     }
+    state_payload_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "ok": {"type": "boolean"},
+            "state": state_schema,
+            "boxes_on_goals": {"type": "integer", "minimum": 0},
+            "total_goals": {"type": "integer", "minimum": 1},
+            "error": {"type": "string"},
+        },
+        "required": ["ok", "state", "boxes_on_goals", "total_goals"],
+    }
 
     return [
         {
@@ -203,42 +215,63 @@ def tool_schemas(*, tool_prefix: str = "sokoban") -> list[dict[str, Any]]:
             "description": "Move the player in one direction; may push one box.",
             "parameters": move_params,
             "response_schema": {
-                "type": "object",
-                "additionalProperties": False,
+                **state_payload_schema,
                 "properties": {
-                    "ok": {"type": "boolean"},
-                    "state": state_schema,
+                    **state_payload_schema["properties"],
                     "action_type": {"type": "string", "enum": ["walk", "push"]},
                     "direction": {
                         "type": "string",
                         "enum": ["up", "down", "left", "right"],
                     },
-                    "boxes_on_goals": {"type": "integer", "minimum": 0},
-                    "total_goals": {"type": "integer", "minimum": 1},
-                    "error": {"type": "string"},
+                    "deadlocked": {"type": "boolean"},
                 },
-                "required": ["ok", "state", "boxes_on_goals", "total_goals"],
             },
         },
         {
             "name": f"{tool_prefix}_get_state",
             "description": "Return the current Sokoban board and counters.",
             "parameters": empty_params,
+            "response_schema": state_payload_schema,
         },
         {
             "name": f"{tool_prefix}_is_solved",
             "description": "Return whether all goals are currently occupied by boxes.",
             "parameters": empty_params,
+            "response_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "solved": {"type": "boolean"},
+                },
+                "required": ["ok", "solved"],
+            },
         },
         {
             "name": f"{tool_prefix}_get_legal_moves",
             "description": "Return legal directions for the current board state.",
             "parameters": empty_params,
+            "response_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "legal_moves": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["up", "down", "left", "right"],
+                        },
+                    },
+                },
+                "required": ["ok", "legal_moves"],
+            },
         },
         {
             "name": f"{tool_prefix}_undo",
             "description": "Undo the last legal move.",
             "parameters": empty_params,
+            "response_schema": state_payload_schema,
         },
     ]
 
@@ -341,6 +374,16 @@ class SokobanEnv:
             return True
         return pos in self.level.walls
 
+    def _apply_max_steps_truncation(self, done: bool, info: dict[str, Any]) -> bool:
+        if (
+            self.max_steps is not None
+            and self.step_count >= self.max_steps
+            and not done
+        ):
+            info["truncated"] = True
+            return True
+        return done
+
     def get_legal_moves(self) -> list[Direction]:
         legal: list[Direction] = []
         for direction in ACTION_SPACE:
@@ -408,9 +451,13 @@ class SokobanEnv:
             "direction": direction,
         }
 
-    def move(self, direction: str) -> SokobanState:
+    def _move_with_meta(self, direction: str) -> tuple[SokobanState, dict[str, Any]]:
         parsed_direction = _parse_direction(direction)
-        state, _meta = self._apply_move(parsed_direction)
+        state, meta = self._apply_move(parsed_direction)
+        return state, meta
+
+    def move(self, direction: str) -> SokobanState:
+        state, _meta = self._move_with_meta(direction)
         return state
 
     def step(
@@ -435,6 +482,9 @@ class SokobanEnv:
             if self.illegal_action_behavior == "raise":
                 raise
             done = self.illegal_action_behavior == "terminate"
+            done = self._apply_max_steps_truncation(done, info)
+            info["deadlocked"] = self.detect_deadlocks and self.is_deadlocked()
+            info["solved"] = self.is_solved()
             return (self.get_state(), self.illegal_move_penalty, done, info)
 
         info["action"] = direction
@@ -446,6 +496,9 @@ class SokobanEnv:
             if self.illegal_action_behavior == "raise":
                 raise
             done = self.illegal_action_behavior == "terminate"
+            done = self._apply_max_steps_truncation(done, info)
+            info["deadlocked"] = self.detect_deadlocks and self.is_deadlocked()
+            info["solved"] = self.is_solved()
             return (self.get_state(), self.illegal_move_penalty, done, info)
 
         reward = self.step_penalty
@@ -463,13 +516,7 @@ class SokobanEnv:
         if solved:
             reward += self.solve_reward
 
-        if (
-            self.max_steps is not None
-            and self.step_count >= self.max_steps
-            and not done
-        ):
-            done = True
-            info["truncated"] = True
+        done = self._apply_max_steps_truncation(done, info)
 
         if deadlocked and self.terminal_on_deadlock and not done:
             done = True
@@ -486,7 +533,7 @@ class SokobanEnv:
 
     def undo(self) -> SokobanState:
         if not self._undo_stack:
-            raise IllegalMoveError("cannot undo: no history")
+            raise SokobanError("cannot undo: no history")
 
         boxes, player, move_count, push_count = self._undo_stack.pop()
         self._boxes = set(boxes)
@@ -531,19 +578,17 @@ class SokobanToolbox:
 
     def move(self, direction: str) -> dict[str, Any]:
         try:
-            self.env.move(direction)
-            direction_normalized = _parse_direction(direction)
+            _state, move_meta = self.env._move_with_meta(direction)
             state_payload = self._state_payload()
-            return {
+            result: dict[str, Any] = {
                 "ok": True,
-                "direction": direction_normalized,
-                "action_type": (
-                    self.env.history[-1]["action_type"]
-                    if self.env.record_history and self.env.history
-                    else None
-                ),
+                "direction": move_meta["direction"],
+                "action_type": move_meta["action_type"],
                 **state_payload,
             }
+            if self.env.detect_deadlocks:
+                result["deadlocked"] = self.env.is_deadlocked()
+            return result
         except SokobanError as exc:
             return {
                 "ok": False,
