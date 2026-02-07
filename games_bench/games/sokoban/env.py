@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
+from .deadlock import compute_dead_squares, is_deadlocked as is_deadlocked_state
+
 Position: TypeAlias = tuple[int, int]
 Direction: TypeAlias = Literal["up", "down", "left", "right"]
 
@@ -316,6 +318,12 @@ class SokobanEnv:
         self._boxes: set[Position] = set()
         self._player: Position = level.player_start
         self._undo_stack: list[tuple[frozenset[Position], Position, int, int]] = []
+        self._dead_squares = compute_dead_squares(
+            width=level.width,
+            height=level.height,
+            walls=level.walls,
+            goals=level.goals,
+        )
 
         self.move_count = 0
         self.push_count = 0
@@ -351,8 +359,14 @@ class SokobanEnv:
         return self._boxes == set(self.level.goals)
 
     def is_deadlocked(self) -> bool:
-        # Phase 1: deadlock detection is intentionally deferred to Phase 2.
-        return False
+        return is_deadlocked_state(
+            width=self.level.width,
+            height=self.level.height,
+            walls=self.level.walls,
+            goals=self.level.goals,
+            boxes=frozenset(self._boxes),
+            dead_squares=self._dead_squares,
+        )
 
     def reset(self) -> SokobanState:
         self._boxes = set(self.level.boxes_start)
