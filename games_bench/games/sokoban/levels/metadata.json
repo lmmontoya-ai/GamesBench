@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "levels": {
+    "starter-authored-v1:1": {
+      "known_optimal": true,
+      "optimal_moves": 1,
+      "optimal_pushes": 1,
+      "optimal_source": "games-bench-authored"
+    },
+    "starter-authored-v1:2": {
+      "known_optimal": true,
+      "optimal_moves": 2,
+      "optimal_pushes": 1,
+      "optimal_source": "games-bench-authored"
+    },
+    "starter-authored-v1:3": {
+      "known_optimal": false,
+      "optimal_moves": null,
+      "optimal_pushes": null,
+      "optimal_source": null
+    }
+  }
+}
