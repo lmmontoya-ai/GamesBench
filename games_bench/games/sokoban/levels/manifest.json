@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "sets": [
+    {
+      "set_name": "starter-authored-v1",
+      "file": "starter_authored_v1.xsb",
+      "source_name": "games-bench contributors",
+      "source_url": "https://github.com/lumontoya/research/games_bench",
+      "license": "MIT",
+      "license_url": "https://opensource.org/licenses/MIT",
+      "redistribution_allowed": true,
+      "copyright_notice": "Copyright (c) 2026 games-bench contributors",
+      "downloaded_at": "2026-02-07",
+      "sha256": "229c1bc6644d25237c4cbd5afdd14adca228330e89fec634c71a9fd2a4daa6e8"
+    }
+  ]
+}
