@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from .deadlock import (
+    compute_dead_squares,
+    has_dead_square_deadlock,
+    has_freeze_deadlock,
+    is_deadlocked,
+)
 from .env import (
     ACTION_INDEX,
     ACTION_SPACE,
@@ -50,8 +56,12 @@ __all__ = [
     "SokobanState",
     "SokobanToolbox",
     "assert_level_governance_valid",
+    "compute_dead_squares",
     "count_levels_in_xsb",
     "default_levels_dir",
+    "has_dead_square_deadlock",
+    "has_freeze_deadlock",
+    "is_deadlocked",
     "list_bundled_level_sets",
     "load_bundled_level_set",
     "load_level_by_id",

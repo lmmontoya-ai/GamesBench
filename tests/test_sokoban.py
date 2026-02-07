@@ -4,6 +4,8 @@ import unittest
 
 from games_bench.games.sokoban import (
     ACTION_INDEX,
+    compute_dead_squares,
+    has_freeze_deadlock,
     IllegalMoveError,
     InvalidActionError,
     InvalidLevelError,
@@ -368,6 +370,135 @@ class TestSokobanEnv(unittest.TestCase):
         env = SokobanEnv(level, detect_deadlocks=True)
         text = env.format_prompt_state(include_deadlock_status=True)
         self.assertIn("Deadlocked: False", text)
+
+
+class TestSokobanDeadlocks(unittest.TestCase):
+    def test_compute_dead_squares_marks_corner_and_not_goal(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@ .#
+#$  #
+#####
+"""
+        )
+        dead_squares = compute_dead_squares(
+            width=level.width,
+            height=level.height,
+            walls=level.walls,
+            goals=level.goals,
+        )
+        self.assertIn((2, 1), dead_squares)
+        self.assertNotIn((1, 3), dead_squares)
+        self.assertNotIn((1, 2), dead_squares)
+
+    def test_env_detects_dead_square_deadlock(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@ .#
+#$  #
+#####
+"""
+        )
+        env = SokobanEnv(level)
+        self.assertTrue(env.is_deadlocked())
+
+    def test_env_ignores_frozen_box_on_goal(self) -> None:
+        level = _level_from_xsb(
+            """#####
+# @ #
+#*  #
+#####
+"""
+        )
+        env = SokobanEnv(level)
+        self.assertTrue(env.is_solved())
+        self.assertFalse(env.is_deadlocked())
+
+    def test_step_deadlock_terminates_when_enabled(self) -> None:
+        level = _level_from_xsb(
+            """######
+#@   #
+#$ . #
+######
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=True,
+            deadlock_penalty=-3.0,
+        )
+        _state, reward, done, info = env.step("right")
+        self.assertTrue(done)
+        self.assertEqual(reward, -3.0)
+        self.assertTrue(info["deadlocked"])
+        self.assertTrue(info["deadlock_terminated"])
+
+    def test_step_deadlock_does_not_terminate_when_disabled(self) -> None:
+        level = _level_from_xsb(
+            """######
+#@   #
+#$ . #
+######
+"""
+        )
+        env = SokobanEnv(
+            level,
+            detect_deadlocks=True,
+            terminal_on_deadlock=False,
+            deadlock_penalty=-3.0,
+        )
+        _state, reward, done, info = env.step("right")
+        self.assertFalse(done)
+        self.assertEqual(reward, -3.0)
+        self.assertTrue(info["deadlocked"])
+        self.assertNotIn("deadlock_terminated", info)
+
+    def test_freeze_deadlock_detected(self) -> None:
+        walls = {
+            *((0, col) for col in range(7)),
+            *((6, col) for col in range(7)),
+            *((row, 0) for row in range(7)),
+            *((row, 6) for row in range(7)),
+            (2, 3),
+            (4, 3),
+            (3, 1),
+            (3, 4),
+        }
+        boxes = frozenset({(3, 2), (3, 3)})
+        goals = frozenset({(1, 1), (5, 5)})
+        self.assertTrue(
+            has_freeze_deadlock(
+                width=7,
+                height=7,
+                walls=frozenset(walls),
+                boxes=boxes,
+                goals=goals,
+            )
+        )
+
+    def test_freeze_detection_ignores_goal_box(self) -> None:
+        walls = {
+            *((0, col) for col in range(7)),
+            *((6, col) for col in range(7)),
+            *((row, 0) for row in range(7)),
+            *((row, 6) for row in range(7)),
+            (2, 3),
+            (4, 3),
+            (3, 1),
+            (3, 4),
+        }
+        boxes = frozenset({(3, 2), (3, 3)})
+        goals = frozenset({(3, 3), (1, 1)})
+        self.assertFalse(
+            has_freeze_deadlock(
+                width=7,
+                height=7,
+                walls=frozenset(walls),
+                boxes=boxes,
+                goals=goals,
+            )
+        )
 
 
 class TestSokobanToolbox(unittest.TestCase):
