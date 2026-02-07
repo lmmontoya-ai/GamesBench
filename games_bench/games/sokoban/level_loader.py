@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -379,13 +380,12 @@ def _split_level_blocks(text: str) -> list[tuple[list[str], list[str]]]:
 
 
 def _normalize_title(level_id: str, comments: list[str]) -> str | None:
+    level_prefix = re.compile(rf"^{re.escape(level_id)}(?:\b|[\s:.-].*)?$")
     for comment in comments:
         text = comment.strip()
         if not text:
             continue
-        if text == level_id:
-            continue
-        if text.startswith(f"{level_id}"):
+        if level_prefix.match(text):
             continue
         return text
     return None

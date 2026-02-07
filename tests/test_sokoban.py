@@ -8,9 +8,11 @@ from games_bench.games.sokoban import (
     InvalidActionError,
     InvalidLevelError,
     SokobanEnv,
+    SokobanError,
     SokobanToolbox,
     load_bundled_level_set,
     parse_xsb_levels,
+    tool_schemas,
 )
 
 
@@ -57,6 +59,54 @@ class TestSokobanLevelLoading(unittest.TestCase):
         with self.assertRaises(InvalidLevelError):
             parse_xsb_levels(text, set_name="bad")
 
+    def test_parse_xsb_levels_supports_composite_symbols(self) -> None:
+        level = _level_from_xsb(
+            """######
+#+*$ #
+######
+"""
+        )
+        self.assertEqual(level.player_start, (1, 1))
+        self.assertEqual(level.boxes_start, frozenset({(1, 2), (1, 3)}))
+        self.assertEqual(level.goals, frozenset({(1, 1), (1, 2)}))
+
+    def test_parse_xsb_levels_rejects_multiple_players(self) -> None:
+        text = """######
+#@@$.#
+######
+"""
+        with self.assertRaises(InvalidLevelError):
+            parse_xsb_levels(text, set_name="bad")
+
+    def test_parse_xsb_levels_rejects_missing_player(self) -> None:
+        text = """######
+#  $.#
+######
+"""
+        with self.assertRaises(InvalidLevelError):
+            parse_xsb_levels(text, set_name="bad")
+
+    def test_parse_xsb_levels_rejects_missing_boxes(self) -> None:
+        text = """######
+# @ .#
+######
+"""
+        with self.assertRaises(InvalidLevelError):
+            parse_xsb_levels(text, set_name="bad")
+
+    def test_parse_xsb_levels_rejects_empty_input(self) -> None:
+        with self.assertRaises(InvalidLevelError):
+            parse_xsb_levels("", set_name="bad")
+
+    def test_parse_xsb_levels_title_does_not_prefix_match_other_ids(self) -> None:
+        text = """; unit:10
+#####
+#@$.#
+#####
+"""
+        levels = parse_xsb_levels(text, set_name="unit")
+        self.assertEqual(levels[0].title, "unit:10")
+
     def test_load_bundled_level_set_starter(self) -> None:
         level_set = load_bundled_level_set("starter-authored-v1")
         self.assertEqual(level_set.name, "starter-authored-v1")
@@ -78,6 +128,34 @@ class TestSokobanEnv(unittest.TestCase):
         self.assertEqual(state.player, (1, 1))
         self.assertEqual(state.boxes, frozenset({(1, 2)}))
         self.assertEqual(env.get_legal_moves(), ["right"])
+
+    def test_legal_moves_cover_all_directions(self) -> None:
+        level = _level_from_xsb(
+            """#######
+#     #
+#  @  #
+#  $ .#
+#     #
+#######
+"""
+        )
+        env = SokobanEnv(level)
+        self.assertEqual(env.get_legal_moves(), ["up", "down", "left", "right"])
+
+        env.move("up")
+        self.assertEqual(env.get_state().player, (1, 3))
+        env.reset()
+
+        env.move("down")
+        self.assertEqual(env.get_state().player, (3, 3))
+        env.reset()
+
+        env.move("left")
+        self.assertEqual(env.get_state().player, (2, 2))
+        env.reset()
+
+        env.move("right")
+        self.assertEqual(env.get_state().player, (2, 4))
 
     def test_move_and_solve(self) -> None:
         level = _level_from_xsb(
@@ -116,6 +194,17 @@ class TestSokobanEnv(unittest.TestCase):
         with self.assertRaises(IllegalMoveError):
             env.move("right")
 
+    def test_push_into_wall_rejected(self) -> None:
+        level = _level_from_xsb(
+            """######
+#@$#.#
+######
+"""
+        )
+        env = SokobanEnv(level)
+        with self.assertRaises(IllegalMoveError):
+            env.move("right")
+
     def test_step_penalizes_illegal_by_default(self) -> None:
         level = _level_from_xsb(
             """#####
@@ -130,6 +219,20 @@ class TestSokobanEnv(unittest.TestCase):
         self.assertEqual(reward, -2.0)
         self.assertFalse(done)
         self.assertTrue(info["illegal_action"])
+
+    def test_step_terminate_behavior_ends_on_illegal(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        env = SokobanEnv(level, illegal_action_behavior="terminate")
+        _state, reward, done, info = env.step("left")
+        self.assertTrue(done)
+        self.assertEqual(reward, env.illegal_move_penalty)
+        self.assertTrue(info["illegal_action"])
+        self.assertFalse(info["truncated"])
 
     def test_step_accepts_int_action_and_rewards(self) -> None:
         level = _level_from_xsb(
@@ -152,6 +255,20 @@ class TestSokobanEnv(unittest.TestCase):
         self.assertAlmostEqual(reward2, 1.4)
         self.assertEqual(state2.boxes, frozenset({(1, 4)}))
 
+    def test_step_push_off_goal_penalty(self) -> None:
+        level = _level_from_xsb(
+            """#######
+# @*  #
+#######
+"""
+        )
+        env = SokobanEnv(level, step_penalty=-0.1, push_off_penalty=-0.4)
+        _state, reward, done, info = env.step("right")
+        self.assertFalse(done)
+        self.assertEqual(info["action_type"], "push")
+        self.assertAlmostEqual(reward, -0.5)
+        self.assertFalse(info["solved"])
+
     def test_step_raise_behavior_raises_on_bad_action(self) -> None:
         level = _level_from_xsb(
             """#####
@@ -162,6 +279,43 @@ class TestSokobanEnv(unittest.TestCase):
         env = SokobanEnv(level, illegal_action_behavior="raise")
         with self.assertRaises(InvalidActionError):
             env.step("diagonal")
+
+    def test_step_raise_behavior_raises_on_illegal_move(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        env = SokobanEnv(level, illegal_action_behavior="raise")
+        with self.assertRaises(IllegalMoveError):
+            env.step("left")
+
+    def test_step_max_steps_truncates_legal_action(self) -> None:
+        level = _level_from_xsb(
+            """######
+#@ $.#
+######
+"""
+        )
+        env = SokobanEnv(level, max_steps=1)
+        _state, _reward, done, info = env.step("right")
+        self.assertTrue(done)
+        self.assertTrue(info["truncated"])
+        self.assertFalse(info["illegal_action"])
+
+    def test_step_max_steps_truncates_illegal_action(self) -> None:
+        level = _level_from_xsb(
+            """######
+#@ $.#
+######
+"""
+        )
+        env = SokobanEnv(level, max_steps=1, illegal_action_behavior="penalize")
+        _state, _reward, done, info = env.step("left")
+        self.assertTrue(done)
+        self.assertTrue(info["truncated"])
+        self.assertTrue(info["illegal_action"])
 
     def test_undo_reverts_state_and_counts(self) -> None:
         level = _level_from_xsb(
@@ -188,7 +342,7 @@ class TestSokobanEnv(unittest.TestCase):
         self.assertEqual(env.push_count, 0)
         self.assertEqual(len(env.history), 0)
 
-        with self.assertRaises(IllegalMoveError):
+        with self.assertRaises(SokobanError):
             env.undo()
 
     def test_format_prompt_state(self) -> None:
@@ -203,6 +357,17 @@ class TestSokobanEnv(unittest.TestCase):
         self.assertIn("Board", text)
         self.assertIn("Boxes on goals", text)
         self.assertIn("Legal moves", text)
+
+    def test_format_prompt_state_includes_deadlock_status(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        env = SokobanEnv(level, detect_deadlocks=True)
+        text = env.format_prompt_state(include_deadlock_status=True)
+        self.assertIn("Deadlocked: False", text)
 
 
 class TestSokobanToolbox(unittest.TestCase):
@@ -227,7 +392,10 @@ class TestSokobanToolbox(unittest.TestCase):
         move_result = toolbox.move("right")
         self.assertTrue(move_result["ok"])
         self.assertEqual(move_result["direction"], "right")
+        self.assertEqual(move_result["action_type"], "push")
+        self.assertFalse(move_result["deadlocked"])
         self.assertEqual(move_result["boxes_on_goals"], 1)
+        self.assertTrue(toolbox.is_solved()["solved"])
 
         undo_result = toolbox.undo()
         self.assertTrue(undo_result["ok"])
@@ -236,6 +404,27 @@ class TestSokobanToolbox(unittest.TestCase):
         undo_fail = toolbox.undo()
         self.assertFalse(undo_fail["ok"])
         self.assertIn("cannot undo", undo_fail["error"])
+
+    def test_toolbox_move_invalid_direction(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        env = SokobanEnv(level)
+        toolbox = SokobanToolbox(env)
+        result = toolbox.move("diagonal")
+        self.assertFalse(result["ok"])
+        self.assertIn("direction string", result["error"])
+
+
+class TestSokobanSchemas(unittest.TestCase):
+    def test_all_tools_expose_response_schemas(self) -> None:
+        schemas = tool_schemas()
+        self.assertEqual(len(schemas), 5)
+        for schema in schemas:
+            self.assertIn("response_schema", schema)
 
 
 if __name__ == "__main__":
