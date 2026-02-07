@@ -398,6 +398,14 @@ class SokobanEnv:
             return True
         return done
 
+    def _apply_deadlock_termination(
+        self, *, deadlocked: bool, done: bool, info: dict[str, Any]
+    ) -> bool:
+        if deadlocked and self.terminal_on_deadlock and not done:
+            info["deadlock_terminated"] = True
+            return True
+        return done
+
     def get_legal_moves(self) -> list[Direction]:
         legal: list[Direction] = []
         for direction in ACTION_SPACE:
@@ -497,7 +505,11 @@ class SokobanEnv:
                 raise
             done = self.illegal_action_behavior == "terminate"
             done = self._apply_max_steps_truncation(done, info)
-            info["deadlocked"] = self.detect_deadlocks and self.is_deadlocked()
+            deadlocked = self.detect_deadlocks and self.is_deadlocked()
+            done = self._apply_deadlock_termination(
+                deadlocked=deadlocked, done=done, info=info
+            )
+            info["deadlocked"] = deadlocked
             info["solved"] = self.is_solved()
             return (self.get_state(), self.illegal_move_penalty, done, info)
 
@@ -511,7 +523,11 @@ class SokobanEnv:
                 raise
             done = self.illegal_action_behavior == "terminate"
             done = self._apply_max_steps_truncation(done, info)
-            info["deadlocked"] = self.detect_deadlocks and self.is_deadlocked()
+            deadlocked = self.detect_deadlocks and self.is_deadlocked()
+            done = self._apply_deadlock_termination(
+                deadlocked=deadlocked, done=done, info=info
+            )
+            info["deadlocked"] = deadlocked
             info["solved"] = self.is_solved()
             return (self.get_state(), self.illegal_move_penalty, done, info)
 
@@ -531,10 +547,9 @@ class SokobanEnv:
             reward += self.solve_reward
 
         done = self._apply_max_steps_truncation(done, info)
-
-        if deadlocked and self.terminal_on_deadlock and not done:
-            done = True
-            info["deadlock_terminated"] = True
+        done = self._apply_deadlock_termination(
+            deadlocked=deadlocked, done=done, info=info
+        )
 
         info["action_type"] = move_meta["action_type"]
         info["move_count"] = self.move_count
