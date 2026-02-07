@@ -1,635 +1,521 @@
-# Sokoban Development Design
+# Sokoban Development Design (Revised)
 
-## 1. Overview
+## 1. Purpose
 
-Sokoban is the second game environment for games-bench, chosen because it maximally
-benefits from external tool-calling: simulating a 2D grid with box physics mentally is
-extremely hard, but with environment feedback a model can focus on strategy. Irreversible
-actions (pushing a box into a corner) create genuine planning pressure absent from Hanoi.
+Sokoban is the second game environment for `games-bench`. It complements Hanoi by
+introducing spatial reasoning, irreversible mistakes, and deceptive local heuristics.
 
-### Relationship to prior work
+Core benchmark question:
 
-**SokoBench** (arXiv 2601.20856) evaluated LLMs on Sokoban but used 1D linear corridors
-with a single box, no environmental feedback, and required models to output complete
-action sequences up front. They found performance collapse beyond ~25 moves.
+- Does interactive tool-calling (state feedback each step) extend effective planning
+  horizon on hard Sokoban levels?
 
-Our approach is fundamentally different:
-- Full 2D boards with multiple boxes (real Sokoban, not simplified corridors)
-- **Interactive tool-calling**: model receives updated state after each action
-- Curated level sets with known optimal solutions for quantitative evaluation
-- Multimodal support (text + image state)
-- Deadlock detection to provide richer feedback
-
-This lets us test whether external state feedback shifts the planning horizon beyond
-the ~25-move ceiling SokoBench observed.
+This document is intentionally implementation-oriented and resolves the design gaps found
+in prior review.
 
 ---
 
-## 2. Game rules
+## 2. Resolved Findings and Design Decisions
 
-1. The player (`@`) moves on a 2D grid with walls (`#`).
-2. The player can push one box (`$`) by moving into it, if the cell behind the box
-   is empty floor or a goal square.
-3. Only one box can be pushed at a time (no chain pushing).
-4. Boxes cannot be pulled — pushes are irreversible.
-5. The puzzle is solved when every goal (`.`) has a box on it (`*`).
-6. A puzzle becomes unsolvable when a box reaches a dead position (deadlock).
-
----
-
-## 3. State representation
-
-### 3.1 XSB format (standard)
-
-The XSB format is the universal standard for Sokoban level representation:
-
-| Character | Meaning        |
-|-----------|----------------|
-| `#`       | Wall           |
-| ` ` (space) | Empty floor  |
-| `@`       | Player         |
-| `+`       | Player on goal |
-| `$`       | Box            |
-| `*`       | Box on goal    |
-| `.`       | Goal           |
-
-Example (Microban level 1):
-
-```
-####
-# .#
-#  ###
-#*@  #
-#  $ #
-#  ###
-####
-```
-
-### 3.2 Internal state (`SokobanState` dataclass)
-
-```python
-@dataclass(frozen=True, slots=True)
-class SokobanState:
-    width: int
-    height: int
-    walls: frozenset[tuple[int, int]]       # (row, col) set
-    boxes: frozenset[tuple[int, int]]        # current box positions
-    goals: frozenset[tuple[int, int]]        # target positions (static)
-    player: tuple[int, int]                  # (row, col)
-    n_boxes: int                             # len(goals), convenience
-
-    def to_dict(self) -> dict[str, Any]: ...
-    def to_xsb(self) -> str: ...            # render as XSB string
-```
-
-Design notes:
-- `frozenset` for hashability (enables visited-state tracking, deadlock caching).
-- Walls and goals are static per level; boxes and player change per step.
-- Coordinate system: `(row, col)`, origin at top-left `(0, 0)`.
-- `to_xsb()` produces the standard text rendering — this is the primary format
-  passed to LLMs as state text.
-
-### 3.3 Text state for LLMs
-
-The XSB grid string is compact and unambiguous. Example output of `format_state()`:
-
-```
-Board (7x6):
-####
-# .#
-#  ###
-#*@  #
-#  $ #
-#  ###
-####
-
-Boxes on goals: 1/2
-```
-
-This mirrors how humans read Sokoban — the same format used in every Sokoban program,
-tutorial, and wiki. No translation overhead for the model.
-
-### 3.4 Image state for multimodal models
-
-PIL-rendered top-down grid view:
-- Each cell is a fixed-size tile (e.g., 48x48 pixels)
-- Color scheme: dark gray walls, light floor, red/orange boxes, green goals,
-  yellow box-on-goal, blue player
-- Row/column labels on edges for spatial reference
-- Configurable: tile size, with/without labels, background color
-
-The rendering follows the same pattern as `render_hanoi_image()` → returns `StateImage`
-(dataclass with `data_base64`, `data_url`, `width`, `height`, `mime_type`).
+| ID | Prior gap | Decision in this revision |
+|----|-----------|---------------------------|
+| F1 | Deadlock semantics were contradictory | Deadlock is a state property; terminal behavior is explicit and variant-dependent via `terminal_on_deadlock` policy. |
+| F2 | Level licensing/provenance was unspecified | Add mandatory level manifest with license, source URL, and redistribution flag; no dataset is vendored without explicit legal compatibility. |
+| F3 | Optimal-based metrics depended on optional data without policy | Add strict `known_optimal` policy and separate denominators for optimal-based aggregates. |
+| F4 | `undo` conflicted with illegal-move accounting | Define illegal actions as blocked movement attempts only; `undo` failures are non-illegal tool errors. Add explicit adapter meta contract. |
+| F5 | Proposed recording schema drifted from current infra | Keep core recording stable; define optional Sokoban extension fields and compatibility rules. |
+| F6 | Module ownership was inconsistent | Normalize module boundaries and file ownership (env vs loader vs adapter vs deadlock). |
+| F7 | `SokobanEnv(level: SokobanLevel | str)` was ambiguous | Constructor accepts `SokobanLevel` only; parsing/loading via explicit factory helpers. |
+| F8 | CLI argument naming typo | Standardize on `tool_variants` everywhere (`dest="tool_variants"`). |
+| F9 | Tool schemas were too permissive | All schemas use `additionalProperties: false`, explicit `required`, and strict empty-object params for query tools. |
+| F10 | Dead-square algorithm was underspecified | Specify reverse-push graph with player stand-behind feasibility to avoid false positives. |
 
 ---
 
-## 4. Action space
+## 3. Architecture and Layer Boundaries
 
-### 4.1 Core actions
+Sokoban must follow repository layering rules in `AGENTS.md`:
 
-Four directional moves: `up`, `down`, `left`, `right`.
+- Game engine (standalone): `games_bench/games/sokoban/**`
+- LLM harness (game-agnostic): `games_bench/llm/**`
+- Benchmark orchestration: `games_bench/bench/**`
 
-A move is a **push** if the target cell contains a box and the cell beyond it is free.
-Otherwise it is a **walk** (player moves without pushing). The environment tracks both
-counts separately.
+Non-negotiable constraints:
 
-```python
-Direction: TypeAlias = Literal["up", "down", "left", "right"]
-
-DIRECTION_DELTAS: dict[str, tuple[int, int]] = {
-    "up":    (-1,  0),
-    "down":  ( 1,  0),
-    "left":  ( 0, -1),
-    "right": ( 0,  1),
-}
-```
-
-### 4.2 RL interface
-
-```python
-ACTION_SPACE: tuple[str, ...] = ("up", "down", "left", "right")
-ACTION_INDEX: dict[str, int] = {d: i for i, d in enumerate(ACTION_SPACE)}
-```
-
-`step(action)` accepts either a string direction or an integer index (0-3).
-
-### 4.3 Illegal vs. impossible moves
-
-| Situation | Behavior |
-|-----------|----------|
-| Walk into wall | Illegal: penalized, state unchanged |
-| Push box into wall | Illegal: penalized, state unchanged |
-| Push two boxes (chain push) | Illegal: penalized, state unchanged |
-| Walk into empty cell | Legal walk: state updated |
-| Push box into empty cell/goal | Legal push: state updated |
-
-Configurable via `illegal_action_behavior`: `"penalize"` (default), `"raise"`, `"terminate"`.
+1. `games_bench/games/sokoban/**` must not import from `bench/` or `llm/`.
+2. `games_bench/llm/**` must not import `games_bench.games.sokoban` directly.
+3. Registry-driven dispatch is required for benchmark and demo entrypoints.
 
 ---
 
-## 5. Tools (tool-calling interface)
+## 4. Task and Episode Semantics
 
-### 5.1 Tool catalog
+### 4.1 Sokoban rules
 
-| Tool | Mutating | Description |
-|------|----------|-------------|
-| `sokoban_move` | Yes | Move player in a direction (may push a box) |
-| `sokoban_get_state` | No | Return current board as XSB string + metadata |
-| `sokoban_is_solved` | No | Check if all goals have boxes |
-| `sokoban_get_legal_moves` | No | Return list of legal directions |
-| `sokoban_undo` | Yes | Undo last move (optional, for tool variants) |
+1. Player (`@`) moves on a grid with walls (`#`).
+2. Moving into a box (`$`) pushes it only if the next cell is free floor or goal.
+3. No pulling; no chain pushes.
+4. Puzzle is solved when all goals (`.`) are occupied by boxes (`*`).
 
-### 5.2 Tool schemas
+### 4.2 Deadlock semantics (explicit)
 
-```python
-def tool_schemas(tool_prefix: str = "sokoban") -> list[dict[str, Any]]:
-    return [
-        {
-            "name": f"{tool_prefix}_move",
-            "description": "Move the player in the given direction. "
-                           "If moving into a box with an empty cell behind it, "
-                           "the box is pushed. Returns the updated board state.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["up", "down", "left", "right"],
-                        "description": "Direction to move"
-                    }
-                },
-                "required": ["direction"]
-            }
-        },
-        {
-            "name": f"{tool_prefix}_get_state",
-            "description": "Return the current board state as an ASCII grid, "
-                           "the number of boxes on goals, and whether the puzzle "
-                           "is solved.",
-            "parameters": {"type": "object", "properties": {}}
-        },
-        {
-            "name": f"{tool_prefix}_is_solved",
-            "description": "Check whether all goals have a box on them.",
-            "parameters": {"type": "object", "properties": {}}
-        },
-        {
-            "name": f"{tool_prefix}_get_legal_moves",
-            "description": "Return a list of directions the player can move "
-                           "(excluding moves into walls or chain pushes).",
-            "parameters": {"type": "object", "properties": {}}
-        },
-        {
-            "name": f"{tool_prefix}_undo",
-            "description": "Undo the last move. Returns the restored board state. "
-                           "Cannot undo past the initial state.",
-            "parameters": {"type": "object", "properties": {}}
-        },
-    ]
-```
+Deadlock is a board property: from current state, puzzle cannot be solved under standard
+Sokoban rules.
 
-### 5.3 Tool result format
+Deadlock does **not** imply universal immediate termination. Termination is policy-driven:
 
-Consistent with Hanoi's `{"ok": bool, ...}` pattern:
+- `terminal_on_deadlock = true`: episode ends unsolved when deadlock is detected.
+- `terminal_on_deadlock = false`: episode continues; deadlock reported in `info`/tool result.
 
-```python
-# Successful move
-{"ok": True, "action": "push", "direction": "right",
- "state": "<xsb string>", "boxes_on_goals": 1, "total_goals": 2}
+Policy by tool variant:
 
-# Illegal move
-{"ok": False, "error": "Cannot push: wall behind box",
- "state": "<unchanged xsb>"}
+- `move_only`, `move_and_query`: default `terminal_on_deadlock = true`
+- `all_tools` (includes `undo`): default `terminal_on_deadlock = false`
 
-# Deadlock detected (informational, not terminal)
-{"ok": True, "action": "push", "direction": "down",
- "state": "<xsb>", "boxes_on_goals": 0, "total_goals": 2,
- "warning": "Deadlock detected: box at (3,1) is stuck"}
-```
+Rationale: `undo` would be pointless if deadlock always hard-terminated.
 
-### 5.4 Tool variants
+### 4.3 Step termination conditions
 
-| Variant | Tools allowed | Tests |
-|---------|---------------|-------|
-| `move_only` | `sokoban_move` | Raw planning with only move feedback |
-| `move_and_query` | `move`, `get_state`, `is_solved`, `get_legal_moves` | Planning with state introspection |
-| `all_tools` | All including `undo` | Planning with backtracking |
+`done = true` when any of:
+
+1. `is_solved() == true`
+2. `max_steps` reached
+3. `terminal_on_deadlock == true` and deadlock detected
+4. `illegal_action_behavior == "terminate"` and illegal action attempted
 
 ---
 
-## 6. Level management
+## 5. Data Governance (Licensing, Provenance, Reproducibility)
 
-### 6.1 Level loading
+### 5.1 Mandatory manifest
 
-Levels are loaded from XSB text files. Each file may contain multiple levels separated
-by blank lines, with optional title/comment lines (lines starting with `;`).
+Each bundled level set must include manifest entries (for example,
+`games_bench/games/sokoban/levels/manifest.json`) with:
 
-```python
-def parse_xsb(text: str) -> list[SokobanLevel]: ...
-def load_level_set(path: str | Path) -> LevelSet: ...
-```
+- `set_name`
+- `source_name`
+- `source_url`
+- `license`
+- `license_url`
+- `redistribution_allowed` (bool)
+- `copyright_notice`
+- `downloaded_at`
+- `sha256`
 
-### 6.2 `SokobanLevel` and `LevelSet`
+### 5.2 Inclusion policy
+
+A level file is vendored only if:
+
+1. License allows redistribution in this repo.
+2. Attribution obligations are met.
+3. Source checksum and provenance are recorded.
+
+Otherwise, provide a fetch script and require user-side download.
+
+### 5.3 Optimal metadata policy
+
+`optimal_moves` and `optimal_pushes` are optional per level.
+
+Required metadata flags:
+
+- `known_optimal` (bool)
+- `optimal_source` (string | null)
+
+Benchmark policy:
+
+- Optimal-ratio metrics (`move_ratio`, `push_ratio`) are computed **only** on
+  `known_optimal == true` episodes.
+- Summaries must include explicit denominators (e.g., `n_with_optimal_moves`).
+- Difficulty plots include an `unknown_optimal` bucket when needed.
+
+---
+
+## 6. Level and State Model
+
+### 6.1 XSB format
+
+Supported symbols:
+
+- `#` wall
+- ` ` floor
+- `@` player
+- `+` player on goal
+- `$` box
+- `*` box on goal
+- `.` goal
+
+### 6.2 Dataclasses
 
 ```python
 @dataclass(frozen=True, slots=True)
 class SokobanLevel:
-    level_id: str                  # "{set_name}:{index}" e.g. "microban:1"
-    title: str | None              # optional level title
+    level_id: str
+    title: str | None
     width: int
     height: int
-    xsb: str                       # canonical XSB text
+    xsb: str
     walls: frozenset[tuple[int, int]]
     boxes_start: frozenset[tuple[int, int]]
     goals: frozenset[tuple[int, int]]
     player_start: tuple[int, int]
     n_boxes: int
-    optimal_moves: int | None       # known optimal move count
-    optimal_pushes: int | None      # known optimal push count
+    optimal_moves: int | None
+    optimal_pushes: int | None
+    known_optimal: bool
 
 @dataclass(frozen=True, slots=True)
 class LevelSet:
     name: str
     description: str
     levels: tuple[SokobanLevel, ...]
-    difficulty: str                 # "easy", "medium", "hard"
+    source_name: str
+    license: str
+
+@dataclass(frozen=True, slots=True)
+class SokobanState:
+    width: int
+    height: int
+    walls: frozenset[tuple[int, int]]
+    boxes: frozenset[tuple[int, int]]
+    goals: frozenset[tuple[int, int]]
+    player: tuple[int, int]
+    n_boxes: int
+
+    def to_dict(self) -> dict[str, Any]: ...
+    def to_xsb(self) -> str: ...
 ```
 
-### 6.3 Bundled level sets
+### 6.3 Constructor API (unambiguous)
 
-Ship a curated selection of freely-available levels in
-`games_bench/games/sokoban/levels/`:
+`SokobanEnv` constructor accepts only parsed levels:
 
-| Set | Levels | Boxes | Grid | Difficulty | Source |
-|-----|--------|-------|------|------------|--------|
-| Microban | 155 | 1-6 | 5x5-10x10 | Easy | David W. Skinner |
-| Microban II | 135 | 1-8 | 5x5-12x12 | Easy-Medium | David W. Skinner |
-| Sasquatch | 50 | 3-8 | 8x8-15x15 | Medium | David W. Skinner |
-| Original | 50 | 3-6 | ~10x10 | Medium-Hard | Thinking Rabbit |
-| Boxoban-easy | 100 (curated) | 4 | 10x10 | Easy | DeepMind |
-| Boxoban-medium | 100 (curated) | 4 | 10x10 | Medium | DeepMind |
-| Boxoban-hard | 100 (curated) | 4 | 10x10 | Hard | DeepMind |
+```python
+class SokobanEnv:
+    def __init__(self, level: SokobanLevel, *, ...): ...
+```
 
-Level files are plain `.xsb` text with a companion `metadata.json` containing known
-optimal solutions where available.
+Parsing/loading is explicit via helpers:
 
-### 6.4 Difficulty dimensions
+```python
+def parse_xsb_levels(text: str, *, set_name: str) -> list[SokobanLevel]: ...
+def load_level_set(path: str | Path) -> LevelSet: ...
+def load_level_by_id(level_id: str) -> SokobanLevel: ...
+```
 
-| Parameter | Range | Effect |
-|-----------|-------|--------|
-| Grid size | 5x5 to 15x15 | Larger grids → longer paths, more dead squares |
-| Number of boxes | 1 to 8 | More boxes → exponential state space growth |
-| Optimal solution length | 5 to 200+ moves | Direct measure of planning horizon |
-| Deadlock density | Low to high | More dead squares → more irreversible traps |
-| Level set | Microban → Original | Curated difficulty progression |
-
-The primary benchmark axis is **optimal solution length** (number of pushes or moves),
-since this directly maps to long-horizon planning capacity — the core metric we want
-to measure against the Illusion of Thinking findings.
+No overloaded `str` meaning in env constructor.
 
 ---
 
-## 7. Environment design (`SokobanEnv`)
-
-### 7.1 Constructor
+## 7. Environment API (`SokobanEnv`)
 
 ```python
 class SokobanEnv:
     def __init__(
         self,
-        level: SokobanLevel | str,         # level object or XSB string
+        level: SokobanLevel,
         *,
         step_penalty: float = 0.0,
-        push_reward: float = 0.0,           # reward for pushing box onto goal
-        push_off_penalty: float = 0.0,      # penalty for pushing box off goal
+        push_reward: float = 0.0,
+        push_off_penalty: float = 0.0,
         illegal_move_penalty: float = -1.0,
         solve_reward: float = 1.0,
-        deadlock_penalty: float = 0.0,      # penalty when deadlock detected
+        deadlock_penalty: float = 0.0,
         illegal_action_behavior: Literal["penalize", "raise", "terminate"] = "penalize",
         max_steps: int | None = None,
         record_history: bool = False,
         detect_deadlocks: bool = True,
+        terminal_on_deadlock: bool = True,
     ) -> None: ...
+
+    def reset(self) -> SokobanState: ...
+    def get_state(self) -> SokobanState: ...
+    def is_solved(self) -> bool: ...
+    def is_deadlocked(self) -> bool: ...
+
+    def move(self, direction: str) -> SokobanState: ...
+    def step(self, action: str | int) -> tuple[SokobanState, float, bool, dict[str, Any]]: ...
+    def undo(self) -> SokobanState: ...
+
+    def get_legal_moves(self) -> list[str]: ...
+    def format_prompt_state(
+        self,
+        *,
+        include_legal_moves: bool = False,
+        include_deadlock_status: bool = False,
+    ) -> str: ...
 ```
 
-### 7.2 Core methods
+Metric properties:
 
-```python
-# === State ===
-def reset(self) -> SokobanState: ...
-def get_state(self) -> SokobanState: ...
-def is_solved(self) -> bool: ...
-def is_deadlocked(self) -> bool: ...
-
-# === Actions ===
-def move(self, direction: str) -> SokobanState:
-    """Apply move. Raises IllegalMoveError if illegal."""
-def step(self, action: str | int) -> tuple[SokobanState, float, bool, dict]:
-    """RL interface. Returns (state, reward, done, info)."""
-def undo(self) -> SokobanState:
-    """Undo last move. Raises if no history."""
-
-# === Query ===
-def get_legal_moves(self) -> list[str]: ...
-def format_prompt_state(self) -> str: ...
-
-# === Metrics ===
-@property
-def move_count(self) -> int: ...    # total moves (walks + pushes)
-@property
-def push_count(self) -> int: ...    # pushes only
-@property
-def step_count(self) -> int: ...    # step() calls (including illegal)
-@property
-def boxes_on_goals(self) -> int: ...
-```
-
-### 7.3 Reward function
-
-| Event | Reward |
-|-------|--------|
-| Legal step (walk or push) | `step_penalty` (typically 0 or small negative) |
-| Push box onto goal | `push_reward` |
-| Push box off goal | `push_off_penalty` |
-| Illegal move | `illegal_move_penalty` |
-| Puzzle solved | `solve_reward` |
-| Deadlock reached | `deadlock_penalty` |
-
-### 7.4 Deadlock detection
-
-Two levels of deadlock detection, both precomputed or cheap at runtime:
-
-**Simple dead squares** (precomputed per level):
-A cell is dead if a box placed there can never reach any goal. Detected by
-reverse-reachability: flood-fill from each goal in reverse-push directions.
-Any cell not reached is dead.
-
-**Freeze deadlocks** (checked after each push):
-A box is frozen if it cannot move along either axis. Checked recursively:
-a box is frozen on an axis if both neighbors on that axis are walls or frozen
-boxes. If a frozen box is not on a goal, it's a deadlock.
-
-These two cover the vast majority of detectable deadlocks without expensive
-computation. Bipartite matching (checking whether all boxes can simultaneously
-reach distinct goals) is deferred to a future enhancement.
-
-### 7.5 Exception hierarchy
-
-```python
-class SokobanError(Exception): ...
-class InvalidLevelError(SokobanError, ValueError): ...
-class IllegalMoveError(SokobanError): ...
-```
-
-### 7.6 `SokobanToolbox`
-
-Wraps `SokobanEnv` methods, catches exceptions, returns `{"ok": bool, ...}` dicts.
-Same pattern as `HanoiToolbox`.
-
-```python
-class SokobanToolbox:
-    def __init__(self, env: SokobanEnv) -> None: ...
-
-    def move(self, direction: str) -> dict[str, Any]: ...
-    def get_state(self) -> dict[str, Any]: ...
-    def is_solved(self) -> dict[str, Any]: ...
-    def get_legal_moves(self) -> dict[str, Any]: ...
-    def undo(self) -> dict[str, Any]: ...
-```
+- `move_count` (walks + pushes)
+- `push_count`
+- `step_count` (includes illegal attempts)
+- `boxes_on_goals`
 
 ---
 
-## 8. Adapter design (`SokobanGameAdapter`)
+## 8. Deadlock Detection Specification
 
-Implements `GameAdapter` protocol. Mirrors `HanoiGameAdapter` structure exactly.
+### 8.1 Dead squares (precomputed)
+
+Algorithm: reverse-push reachability from goals.
+
+A cell `c` is reverse-reachable if there exists a sequence of reverse pushes from any goal
+that can place a box on `c`, where each reverse step from `to -> from` requires:
+
+1. `from` is floor/goal and not wall
+2. `to` is floor/goal and not wall
+3. The player stand-behind cell for that reverse push is traversable in the static board
+   model (not a wall)
+
+Cells not reverse-reachable are marked dead squares.
+
+### 8.2 Freeze deadlocks (runtime)
+
+After each push, detect frozen boxes recursively:
+
+- Box is axis-blocked if both adjacent cells on that axis are walls or boxes that are
+  themselves axis-blocked.
+- Box frozen on both axes and not on goal => deadlock.
+
+### 8.3 False-positive safeguards
+
+- Goals are never dead squares.
+- Freeze checks must not treat goal occupancy as automatic deadlock.
+- Unit tests include known solvable non-trivial states.
+
+---
+
+## 9. Actions and Illegal-Move Semantics
+
+### 9.1 Action space
+
+```python
+ACTION_SPACE: tuple[str, ...] = ("up", "down", "left", "right")
+ACTION_INDEX: dict[str, int] = {d: i for i, d in enumerate(ACTION_SPACE)}
+```
+
+### 9.2 Illegal action definition
+
+`illegal_moves` means only blocked movement attempts:
+
+- Into wall
+- Push into wall
+- Push into occupied cell (chain push)
+
+Non-movement tool failures (for example, `undo` with empty history) are **not** illegal
+moves.
+
+### 9.3 Reward table
+
+| Event | Reward |
+|-------|--------|
+| Legal walk/push | `step_penalty` |
+| Push box onto goal | `push_reward` |
+| Push box off goal | `push_off_penalty` |
+| Illegal movement attempt | `illegal_move_penalty` |
+| Solved | `solve_reward` |
+| Deadlock detected | `deadlock_penalty` |
+
+---
+
+## 10. Tool Interface and Schemas
+
+### 10.1 Tool catalog
+
+- `sokoban_move` (mutating)
+- `sokoban_get_state` (query)
+- `sokoban_is_solved` (query)
+- `sokoban_get_legal_moves` (query)
+- `sokoban_undo` (mutating, optional by variant)
+
+### 10.2 Strict schema contract
+
+All tools must use strict JSON schemas.
+
+```python
+def tool_schemas(tool_prefix: str = "sokoban") -> list[dict[str, Any]]:
+    return [
+        {
+            "name": f"{tool_prefix}_move",
+            "description": "Move player in one direction; may push one box.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "left", "right"],
+                    }
+                },
+                "required": ["direction"],
+            },
+        },
+        {
+            "name": f"{tool_prefix}_get_state",
+            "description": "Return current state and counters.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": f"{tool_prefix}_is_solved",
+            "description": "Check solved status.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": f"{tool_prefix}_get_legal_moves",
+            "description": "Return legal move directions.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": f"{tool_prefix}_undo",
+            "description": "Undo last move if history exists.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+                "required": [],
+            },
+        },
+    ]
+```
+
+### 10.3 Tool result contract
+
+Movement tool returns include:
+
+- `ok`
+- `action_type`: `"walk" | "push"`
+- `direction`
+- `state` (serialized)
+- `boxes_on_goals`
+- `deadlocked` (if detection enabled)
+
+Query tool returns include `ok` and relevant fields only.
+
+`undo` no-history response:
+
+- `ok: false`
+- `error: "cannot undo: no history"`
+- `state` unchanged
+
+### 10.4 Adapter meta contract (for harness + recording)
+
+`ToolExecution.meta` for Sokoban must include:
+
+- `state_mutating`: bool
+- `illegal_action`: bool (true only for illegal movement attempts)
+- `action_kind`: `"move" | "query" | "undo"`
+- `counts_as_move`: bool
+
+Rules:
+
+- `sokoban_move` legal walk/push: `counts_as_move=true`
+- `sokoban_move` illegal attempt: `illegal_action=true`, `counts_as_move=false`
+- `sokoban_undo` success/failure: `illegal_action=false`, `counts_as_move=false`
+- Query tools: both false
+
+This preserves clean illegal-move metrics and avoids counting undo as forward move.
+
+### 10.5 Tool variants
+
+| Variant | Allowed tools | Defaults |
+|---------|----------------|----------|
+| `move_only` | `sokoban_move` | `terminal_on_deadlock=true` |
+| `move_and_query` | `move`, `get_state`, `is_solved`, `get_legal_moves` | `terminal_on_deadlock=true` |
+| `all_tools` | all above + `undo` | `terminal_on_deadlock=false` |
+
+---
+
+## 11. Adapter (`SokobanGameAdapter`)
+
+`SokobanGameAdapter` implements `games_bench.games.adapter.GameAdapter`.
 
 ```python
 class SokobanGameAdapter:
-    def __init__(
-        self,
-        env: SokobanEnv,
-        *,
-        tool_prefix: str = "sokoban",
-        instructions: str | None = None,
-    ) -> None: ...
-
+    def __init__(self, env: SokobanEnv, *, tool_prefix: str = "sokoban", instructions: str | None = None) -> None: ...
     def tool_schemas(self) -> list[dict[str, Any]]: ...
-
-    def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
-        # Routes to toolbox methods
-        # meta: {"state_mutating": bool, "illegal_action": bool}
-        # sokoban_move → mutating=True, illegal if result["ok"] is False
-        # sokoban_undo → mutating=True
-        # sokoban_get_state, is_solved, get_legal_moves → mutating=False
-
+    def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution: ...
     def get_state_snapshot(self) -> dict[str, Any]: ...
     def is_solved(self) -> bool: ...
     def default_instructions(self) -> str: ...
     def format_state(self) -> str: ...
-
-    def episode_metrics(self) -> dict[str, Any]:
-        return {
-            "level_id": self.env.level.level_id,
-            "n_boxes": self.env.level.n_boxes,
-            "grid_size": f"{self.env.level.width}x{self.env.level.height}",
-            "move_count": self.env.move_count,
-            "push_count": self.env.push_count,
-            "optimal_moves": self.env.level.optimal_moves,
-            "optimal_pushes": self.env.level.optimal_pushes,
-            "boxes_on_goals": self.env.boxes_on_goals,
-            "deadlocked": self.env.is_deadlocked(),
-            "history": self.env.history if self.env.record_history else None,
-        }
+    def episode_metrics(self) -> dict[str, Any]: ...
 ```
+
+Required episode metrics:
+
+- `level_id`, `n_boxes`, `grid_size`
+- `move_count`, `push_count`, `boxes_on_goals`, `deadlocked`
+- `optimal_moves`, `optimal_pushes`, `known_optimal`
+- `history` (when recorded)
 
 ---
 
-## 9. Prompts
+## 12. Prompt Design
 
-### 9.1 Prompt templates (`games_bench/games/sokoban/prompts/`)
+`games_bench/games/sokoban/prompts/`:
 
-**`default.txt`:**
+- `default.txt`
+- `image_suffix.txt`
 
-```
-You are solving a Sokoban puzzle.
-Goal: push all boxes ($) onto the goal squares (.).
-- You move with: up, down, left, right.
-- Walking into a box pushes it if the cell behind it is empty.
-- You cannot push two boxes at once.
-- You cannot pull boxes — pushes are permanent.
-- Walls (#) block movement.
-Board symbols: # wall, @ you, $ box, . goal, * box on goal, + you on goal.
-Call exactly one tool per turn.
-```
+Prompt variants:
 
-**`image_suffix.txt`:**
+- `minimal`
+- `with_legal_moves`
+- `with_deadlock_warnings`
+- `full`
 
-```
-The current state is provided as an image. The grid shows walls (dark gray),
-floor (light), boxes (red/orange), goals (green circles), boxes on goals
-(yellow), and the player (blue). Row/column indices are labeled on the edges.
-```
+Prompt policy:
 
-### 9.2 Prompt variants
-
-| Variant | Description |
-|---------|-------------|
-| `minimal` | Default instructions, no legal moves, no deadlock info |
-| `with_legal_moves` | Includes legal move directions in state |
-| `with_deadlock_warnings` | Mentions deadlock risk in instructions |
-| `full` | All hints: legal moves + deadlock warnings |
+1. Always require exactly one tool call per turn.
+2. Keep board symbols stable and explicit.
+3. For image mode, keep symbol legend synchronized with renderer colors.
 
 ---
 
-## 10. Vision / image rendering
+## 13. Vision / Rendering
 
-### 10.1 Grid renderer
+`vision.py` provides:
 
 ```python
-def render_sokoban_image(
-    state: SokobanState,
-    *,
-    tile_size: int = 48,
-    label_grid: bool = True,
-    background: str = "white",
-) -> StateImage:
+def render_sokoban_image(state: SokobanState, *, tile_size: int = 48, label_grid: bool = True, background: str = "white") -> StateImage: ...
+def render_sokoban_state_image(state: SokobanState, **kwargs) -> StateImage: ...
+def render_sokoban_env_image(env: SokobanEnv, **kwargs) -> StateImage: ...
 ```
 
-Tile-based rendering using PIL:
+Constraints:
 
-| Element | Color | Shape |
-|---------|-------|-------|
-| Wall | Dark gray `#404040` | Filled square |
-| Floor | Light gray `#E8E8E8` | Filled square |
-| Goal | Green `#4CAF50` | Circle/diamond on floor |
-| Box | Red/orange `#E65100` | Rounded square |
-| Box on goal | Yellow/gold `#FFC107` | Rounded square |
-| Player | Blue `#1565C0` | Circle |
-| Player on goal | Blue `#1565C0` | Circle on green |
-
-Grid lines separate cells. Optional row/column labels on edges for spatial reference
-(important for multimodal models to describe positions).
-
-### 10.2 Integration with harness
-
-Same pattern as Hanoi:
-```python
-def render_sokoban_state_image(state, **kwargs) -> StateImage: ...
-def render_sokoban_env_image(env, **kwargs) -> StateImage: ...
-```
-
-Returns `StateImage(mime_type, data_base64, data_url, width, height)`.
+- Lazy PIL import with actionable error guidance (`games-bench[viz]` / `uv sync --group viz`).
+- Deterministic rendering for regression tests.
 
 ---
 
-## 11. Metrics
+## 14. Benchmark Runner (`bench/sokoban.py`)
 
-### 11.1 Per-episode metrics (from adapter)
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `level_id` | str | Level identifier (e.g., "microban:1") |
-| `n_boxes` | int | Number of boxes in the level |
-| `grid_size` | str | "WxH" grid dimensions |
-| `solved` | bool | All boxes on goals |
-| `move_count` | int | Total moves (walks + pushes) |
-| `push_count` | int | Pushes only |
-| `optimal_moves` | int\|None | Known optimal move count |
-| `optimal_pushes` | int\|None | Known optimal push count |
-| `move_ratio` | float\|None | `move_count / optimal_moves` (efficiency) |
-| `push_ratio` | float\|None | `push_count / optimal_pushes` |
-| `boxes_on_goals` | int | Boxes placed at episode end |
-| `boxes_on_goals_ratio` | float | `boxes_on_goals / n_boxes` (partial progress) |
-| `deadlocked` | bool | Reached unrecoverable state |
-| `illegal_moves` | int | Attempted illegal moves (from harness) |
-| `tool_calls` | int | Total tool invocations (from harness) |
-
-### 11.2 Aggregate metrics (batch runner)
-
-| Metric | Description |
-|--------|-------------|
-| `episodes` | Total episodes run |
-| `solved` / `solve_rate` | Count and fraction solved |
-| `deadlocked` / `deadlock_rate` | Count and fraction that deadlocked |
-| `avg_moves` | Mean moves per episode |
-| `avg_pushes` | Mean pushes per episode |
-| `avg_move_ratio` | Mean move efficiency (solved episodes only) |
-| `avg_push_ratio` | Mean push efficiency (solved episodes only) |
-| `avg_boxes_placed` | Mean boxes on goals at episode end |
-| `avg_illegal_moves` | Mean illegal move attempts |
-| `avg_tool_calls` | Mean tool calls per episode |
-| `solve_rate_by_difficulty` | Solve rate bucketed by optimal solution length |
-| `token_totals` / `cost_total` | Resource usage |
-
-### 11.3 Difficulty-stratified analysis
-
-Group results by optimal solution length buckets to produce a planning-horizon
-curve (analogous to the Apple paper's complexity scaling plots):
-
-| Bucket | Optimal moves |
-|--------|---------------|
-| Trivial | 1-10 |
-| Easy | 11-25 |
-| Medium | 26-50 |
-| Hard | 51-100 |
-| Expert | 100+ |
-
-This directly tests whether tool-calling shifts the performance cliff observed
-in the Illusion of Thinking and SokoBench papers.
-
----
-
-## 12. Benchmark runner (`bench/sokoban.py`)
-
-### 12.1 Configuration
+### 14.1 Default config
 
 ```python
 def default_sokoban_config() -> dict[str, Any]:
     return {
         "level_sets": ["microban"],
-        "level_ids": None,               # None = all levels in the set
-        "max_levels": 20,                 # cap for large sets
-        "difficulty_filter": None,        # e.g., {"max_optimal_moves": 50}
+        "level_ids": None,
+        "max_levels": 20,
+        "difficulty_filter": None,
         "runs_per_level": 1,
         "max_turns": 300,
         "prompt_variants": ["minimal"],
@@ -639,13 +525,14 @@ def default_sokoban_config() -> dict[str, Any]:
         "image_labels": True,
         "image_background": "white",
         "detect_deadlocks": True,
+        "terminal_on_deadlock": True,
         "record": False,
         "record_raw": False,
         "record_provider_raw": False,
     }
 ```
 
-### 12.2 CLI arguments (game-specific)
+### 14.2 Game-specific CLI args
 
 ```python
 def add_sokoban_arguments(parser: argparse.ArgumentParser) -> None:
@@ -653,150 +540,123 @@ def add_sokoban_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--level-id", action="append")
     parser.add_argument("--max-levels", type=int)
     parser.add_argument("--max-optimal-moves", type=int)
-    parser.add_argument("--prompt-variant", action="append")
-    parser.add_argument("--tool-variant", action="append", dest="tools_variant")
+    parser.add_argument("--prompt-variant", action="append", dest="prompt_variants")
+    parser.add_argument("--tool-variant", action="append", dest="tool_variants")
     parser.add_argument("--runs-per-level", type=int)
     parser.add_argument("--state-format", choices=["text", "image", "both"])
     parser.add_argument("--detect-deadlocks", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--terminal-on-deadlock", action=argparse.BooleanOptionalAction)
 ```
 
-### 12.3 Batch loop structure
+### 14.3 Merge precedence
 
-```
-for model in models:
-    provider = build_provider(model, ...)
-    for level_set in level_sets:
-        for level in filtered_levels(level_set):
-            for prompt_variant in prompt_variants:
-                for tool_variant in tool_variants:
-                    for run in range(runs_per_level):
-                        env = SokobanEnv(level, ...)
-                        adapter = SokobanGameAdapter(env, ...)
-                        result = run_tool_calling_episode(adapter, provider, ...)
-                        write_episode(result)
-    write_summary(all_results)
-```
+Must follow repository contract:
 
-### 12.4 Config file format
-
-```json
-{
-  "models": {"openrouter": ["openai/gpt-4.1-mini"]},
-  "out_dir": "artifacts/runs",
-  "games": {
-    "sokoban": {
-      "level_sets": ["microban", "boxoban-easy"],
-      "max_levels": 50,
-      "difficulty_filter": {"max_optimal_moves": 100},
-      "prompt_variants": ["minimal", "full"],
-      "tool_variants": ["move_only", "all_tools"],
-      "runs_per_level": 3,
-      "max_turns": 300,
-      "state_format": "text"
-    }
-  }
-}
-```
+`BenchSpec.default_config() < global config < per-game overrides`
 
 ---
 
-## 13. Rendering and review
+## 15. Metrics and Reporting
 
-### 13.1 Recording format
+### 15.1 Per-episode fields
 
-Same structure as Hanoi recordings — list of steps with state snapshots:
+- `solved`
+- `deadlocked`
+- `move_count`
+- `push_count`
+- `illegal_moves`
+- `tool_calls`
+- `boxes_on_goals`
+- `boxes_on_goals_ratio`
+- `optimal_moves`, `optimal_pushes`, `known_optimal`
+- `move_ratio`, `push_ratio` (only when denominator available)
 
-```json
-{
-  "metadata": {
-    "game": "sokoban",
-    "level_id": "microban:1",
-    "n_boxes": 2,
-    "grid_size": "7x6",
-    "optimal_moves": 15,
-    "optimal_pushes": 8
-  },
-  "summary": {
-    "solved": true,
-    "total_moves": 23,
-    "total_pushes": 12,
-    "total_illegal_moves": 2,
-    "total_tool_calls": 25
-  },
-  "steps": [
-    {
-      "index": 0,
-      "state_before": "<xsb>",
-      "action": null,
-      "state_after": "<xsb>"
-    },
-    {
-      "index": 1,
-      "state_before": "<xsb>",
-      "action": {"name": "sokoban_move", "arguments": {"direction": "right"}},
-      "state_after": "<xsb>",
-      "action_type": "push"
-    }
-  ]
-}
-```
+### 15.2 Aggregate metrics
 
-### 13.2 HTML renderer (`render.py`)
+Include explicit denominators:
 
-Interactive browser-based playback:
-- Step slider/arrows
-- Grid rendered via inline SVG or canvas
-- Move/push counter display
-- Deadlock indicator
-- Color-coded: walks in one color, pushes in another, illegal in red
+- `avg_move_ratio` + `n_with_optimal_moves`
+- `avg_push_ratio` + `n_with_optimal_pushes`
 
-### 13.3 Review mode
+Difficulty analysis:
 
-Same pattern as Hanoi review: prompt + per-step images for manual inspection of
-model behavior. Useful for debugging model strategy and identifying failure modes.
+- Primary: optimal-move buckets for known-optimal episodes
+- Secondary: `unknown_optimal` bucket using structural descriptors (`n_boxes`, grid area)
 
 ---
 
-## 14. File structure
+## 16. Recording Contract (Compatibility-First)
 
-```
+### 16.1 Core compatibility
+
+Keep base recording structure unchanged:
+
+- `metadata`
+- `summary`
+- `steps`
+
+### 16.2 Optional Sokoban extensions
+
+Allowed additive fields:
+
+- `summary.total_pushes` (optional)
+- `steps[].action_type` (`walk`/`push`/`undo`) (optional)
+
+Rules:
+
+1. Existing readers must continue working if extension fields are absent.
+2. Sokoban render/review tools may consume extension fields opportunistically.
+3. Authoritative push counts remain in episode metrics (`push_count`) even if recording
+   extension is disabled.
+
+### 16.3 Generic integration note
+
+To support precise game-specific counting, recording logic should prioritize
+`ToolExecution.meta` keys (`counts_as_move`, `action_kind`) over tool-name heuristics.
+
+---
+
+## 17. File Structure (Consistent Ownership)
+
+```text
 games_bench/games/sokoban/
-├── __init__.py              # public API exports
-├── env.py                   # SokobanEnv, SokobanState, SokobanToolbox
-├── adapter.py               # SokobanGameAdapter (GameAdapter protocol)
-├── tool_schemas.py          # tool_schemas() function
-├── level_loader.py          # XSB parser, LevelSet, SokobanLevel
-├── deadlock.py              # dead square detection, freeze deadlock check
-├── vision.py                # render_sokoban_image() → StateImage
-├── render.py                # recording playback (HTML, ASCII, video)
-├── review.py                # manual review with per-step images
+├── __init__.py
+├── env.py               # SokobanState, SokobanEnv, SokobanToolbox, tool_schemas
+├── adapter.py           # SokobanGameAdapter
+├── level_loader.py      # XSB parser, level-set loader, manifest loader
+├── deadlock.py          # dead-square + freeze logic
+├── vision.py            # image rendering
+├── render.py            # playback renderer
+├── review.py            # manual review bundle
 ├── prompts/
-│   ├── __init__.py          # format_instructions(), default_instructions()
+│   ├── __init__.py
 │   ├── default.txt
 │   └── image_suffix.txt
 └── levels/
-    ├── microban.xsb
-    ├── microban_ii.xsb
-    ├── sasquatch.xsb
-    ├── original.xsb
-    └── metadata.json        # optimal solutions where known
+    ├── manifest.json
+    ├── *.xsb
+    └── metadata.json
 
-games_bench/bench/sokoban.py     # batch runner, CLI args, default config
+games_bench/bench/sokoban.py
 ```
 
-### Registry wiring
+`tool_schemas.py` is intentionally **not** split out in v1 to avoid unnecessary surface area
+and to mirror existing Hanoi conventions.
 
-In `games_bench/games/registry.py` → `load_builtin_games()`:
+---
+
+## 18. Registry Wiring
+
+Game registry:
+
 ```python
 from games_bench.games.sokoban import SokobanEnv
 register_game(GameSpec(name="sokoban", description="Sokoban", env_factory=SokobanEnv))
 ```
 
-In `games_bench/bench/registry.py` → `load_builtin_benchmarks()`:
-```python
-from games_bench.bench import sokoban as sokoban_bench
-from games_bench.games.sokoban import render as sokoban_render, review as sokoban_review
+Benchmark registry:
 
+```python
 register_benchmark(BenchSpec(
     name="sokoban",
     description="Sokoban",
@@ -811,173 +671,139 @@ register_benchmark(BenchSpec(
 
 ---
 
-## 15. Development phases
+## 19. Development Phases and Quality Gates
+
+### Phase 0: Governance and fixtures
+
+Deliverables:
+
+1. Manifest format + validation utility
+2. Initial legally approved level subset
+3. Metadata policy (`known_optimal`, sources)
+
+Gate:
+
+- No unlicensed datasets in tree.
 
 ### Phase 1: Core environment
 
-**Goal:** Standalone `SokobanEnv` that passes unit tests with no LLM/bench deps.
+Deliverables:
 
-Tasks:
-1. Implement `SokobanLevel` and `SokobanState` dataclasses in `env.py`
-2. Implement XSB parser in `level_loader.py` (parse single level, multi-level files)
-3. Implement `SokobanEnv` core: constructor, `reset()`, `get_state()`, `move()`,
-   `is_solved()`, `get_legal_moves()`, `format_prompt_state()`
-4. Implement `step()` RL interface with configurable illegal action behavior
-5. Implement reward function (step penalty, push reward, solve reward, illegal penalty)
-6. Implement `undo()` with history tracking
-7. Implement `SokobanToolbox` wrapper
-8. Write exception hierarchy (`SokobanError`, `InvalidLevelError`, `IllegalMoveError`)
-9. Bundle Microban level set (`.xsb` file)
-10. Write tests: level parsing, movement, pushing, illegal moves, solve detection,
-    undo, toolbox error handling
+1. `SokobanLevel`, `SokobanState`
+2. Level loading/parsing
+3. `SokobanEnv` movement, step, rewards, undo
+4. `SokobanToolbox`, strict tool schemas
 
-**Tests (Phase 1):**
-- `test_level_loading` — parse XSB, multi-level files, edge cases
-- `test_movement` — walk in all 4 directions, wall collision
-- `test_pushing` — push box, chain push rejection, push into wall
-- `test_solve` — solve a small level, verify `is_solved()`
-- `test_rl_interface` — `step()` returns, reward values, done flag
-- `test_undo` — undo push, undo walk, undo past start
-- `test_toolbox` — all tool methods return `{"ok": ...}` dicts
+Tests:
+
+- Parse edge cases
+- Movement/push legality
+- Solve detection
+- Undo semantics
+- Illegal-action behavior
+
+Gate:
+
+- Standalone game tests pass with zero `bench`/`llm` imports.
 
 ### Phase 2: Deadlock detection
 
-**Goal:** Detect common deadlocks without expensive computation.
+Deliverables:
 
-Tasks:
-1. Implement simple dead square detection in `deadlock.py` (reverse-reachability
-   flood-fill from goals)
-2. Implement freeze deadlock detection (recursive axis check)
-3. Integrate into `SokobanEnv`: `is_deadlocked()`, optional `deadlock_penalty`
-4. Add deadlock info to toolbox move results (warning field)
-5. Write tests: dead corners, dead edges, freeze deadlocks, false-positive checks
+1. Dead-square precompute
+2. Freeze deadlock checks
+3. Env integration and deadlock policy flags
 
-**Tests (Phase 2):**
-- `test_dead_squares` — corner box, edge box, non-dead positions
-- `test_freeze_deadlock` — two boxes blocking each other, box against wall + box
-- `test_no_false_positives` — solvable position not flagged
+Tests:
 
-### Phase 3: Adapter and prompts
+- Dead corners/edges
+- Freeze deadlocks
+- False-positive controls
 
-**Goal:** `SokobanGameAdapter` that plugs into the existing LLM harness.
+Gate:
 
-Tasks:
-1. Implement `SokobanGameAdapter` in `adapter.py`
-2. Implement `tool_schemas()` in `tool_schemas.py`
-3. Create prompt templates in `prompts/`
-4. Define prompt variants (minimal, with_legal_moves, with_deadlock_warnings, full)
-5. Implement `episode_metrics()` with all per-episode metrics
-6. Export public API in `__init__.py`
-7. Register in `games/registry.py`
-8. Write adapter integration test (execute_tool routing, ToolExecution metadata)
+- Deadlock detection precision acceptable on curated test fixtures.
 
-**Tests (Phase 3):**
-- `test_adapter_tool_routing` — each tool dispatches correctly
-- `test_adapter_metrics` — episode_metrics returns expected fields
-- `test_adapter_instructions` — default and custom instructions
-- `test_tool_execution_metadata` — mutating/illegal flags set correctly
+### Phase 3: Adapter + prompts
+
+Deliverables:
+
+1. `SokobanGameAdapter`
+2. Prompt variants
+3. Episode metrics contract
+
+Tests:
+
+- Tool routing
+- Meta correctness (`illegal_action`, `counts_as_move`)
+- Prompt formatting
+
+Gate:
+
+- Harness integration works without game-specific imports in `llm/`.
 
 ### Phase 4: Vision
 
-**Goal:** PIL-based grid renderer for multimodal benchmarks.
+Deliverables:
 
-Tasks:
-1. Implement `render_sokoban_image()` in `vision.py`
-2. Tile-based rendering with color scheme
-3. Optional grid labels (row/col indices)
-4. `render_sokoban_state_image()` and `render_sokoban_env_image()` wrappers
-5. Create `image_suffix.txt` prompt
-6. Write visual regression test (render known state, check dimensions/non-empty)
+1. PIL renderer
+2. State/env image wrappers
+3. Image prompt suffix
 
-**Tests (Phase 4):**
-- `test_render_dimensions` — output size matches expected tile_size * grid
-- `test_render_returns_state_image` — correct dataclass fields
+Tests:
 
-### Phase 5: Benchmark runner
+- Dimensions/type checks
+- Basic visual regression snapshots
 
-**Goal:** `bench/sokoban.py` fully integrated with batch CLI.
+### Phase 5: Benchmark runner integration
 
-Tasks:
-1. Implement `default_sokoban_config()`, `add_sokoban_arguments()`
-2. Implement `build_sokoban_adapter()`
-3. Implement `run_batch()` with level iteration, variant loops, metrics
-4. Register `BenchSpec` in `bench/registry.py`
-5. Implement difficulty-stratified summary (solve rate by optimal solution bucket)
-6. Verify `games-bench run sokoban --help` works
-7. Verify `games-bench run --config configs/sokoban.json` works
-8. Write batch runner test (args not mutated, config merge)
+Deliverables:
 
-**Tests (Phase 5):**
-- `test_sokoban_batch_args` — args namespace not mutated across iterations
-- `test_sokoban_config_merge` — default < global < per-game precedence
+1. `bench/sokoban.py`
+2. Registry wiring
+3. Config/CLI support
+4. Aggregates with denominator-aware optimal metrics
 
-### Phase 6: Rendering and review
+Tests:
 
-**Goal:** Recording playback and manual review tooling.
+- Config precedence
+- Args namespace immutability
+- `run sokoban --help`
+- Config-driven mode
 
-Tasks:
-1. Implement `render.py` — HTML playback with step slider
-2. Implement `review.py` — per-step image review
-3. Wire `render_main` and `review_main` into BenchSpec
-4. Verify `games-bench render --game sokoban --run-dir ...` works
-5. Verify `games-bench review --game sokoban --run-dir ...` works
+### Phase 6: Render/review integration
 
-### Phase 7: Additional level sets and polish
+Deliverables:
 
-**Goal:** Expand level coverage, add optimal solution data, update docs.
+1. Sokoban render/review entrypoints
+2. Optional recording extensions support
 
-Tasks:
-1. Bundle additional level sets (Sasquatch, Original, Boxoban subsets)
-2. Add `metadata.json` with optimal solution data where available
-3. Update `CLAUDE.md`, `AGENTS.md`, `README.md`
-4. Add Sokoban section to README (standalone usage example)
-5. Create `configs/sokoban.json` sample config
-6. Run full test suite, verify no regressions
+Tests:
+
+- Playback generation
+- Review bundle generation
+
+### Phase 7: Expansion and docs
+
+Deliverables:
+
+1. Additional approved level sets
+2. README/AGENTS/CLAUDE updates
+3. Example `configs/sokoban.json`
+
+Gate:
+
+- Full repo tests pass; no layering regressions.
 
 ---
 
-## 16. Architectural decisions
+## 20. Definition of Done (Sokoban v1)
 
-### Why separate `level_loader.py` from `env.py`?
+Sokoban v1 is done when all are true:
 
-Level parsing/loading is a distinct concern from game simulation. The loader handles
-file I/O, XSB parsing, and metadata — the env operates on an already-parsed
-`SokobanLevel`. This keeps the env pure (no file I/O) and lets levels be loaded from
-strings, files, or databases.
-
-### Why separate `deadlock.py`?
-
-Deadlock detection is algorithmically complex and independently testable. Keeping it
-in its own module:
-- Allows the env to optionally skip detection (`detect_deadlocks=False`)
-- Makes the algorithms easier to test in isolation
-- Keeps `env.py` focused on core game mechanics
-
-### Why not procedural level generation?
-
-Procedural generation (like DeepMind's Boxoban) is valuable for RL training but
-problematic for benchmarking LLMs:
-- Generated levels lack curated difficulty curves
-- No guaranteed optimal solutions for comparison
-- Reproducibility requires saving seeds + generator version
-
-Instead, we use curated level sets with known solutions. This gives deterministic,
-reproducible benchmarks with quantitative efficiency metrics.
-
-### Why XSB format for text state?
-
-- Universal standard — every Sokoban tool, wiki, and paper uses it
-- Maximally compact — one character per cell
-- Self-documenting — readable without a legend
-- Round-trip safe — `parse_xsb(state.to_xsb()) == state`
-- Proven with LLMs — SokoBench used XSB successfully
-
-### Why include `undo` as a tool?
-
-Undo transforms Sokoban from an irreversible puzzle into a search problem with
-backtracking. This creates a meaningful tool variant axis:
-- `move_only`: tests pure forward planning (can the model avoid deadlocks?)
-- `all_tools` (with undo): tests search strategy (can the model explore and backtrack?)
-
-Comparing solve rates across these variants measures the value of backtracking
-capability — directly relevant to the planning vs. simulation distinction.
+1. Level data in repo satisfies license/provenance requirements.
+2. Game layer is standalone and fully tested.
+3. Adapter integrates through generic harness without special-case `llm` logic.
+4. Benchmark outputs include denominator-aware optimal metrics.
+5. Deadlock/undo/illegal semantics are implemented exactly as specified.
+6. Render/review tooling works with recording compatibility guarantees.
