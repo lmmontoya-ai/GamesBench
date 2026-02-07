@@ -428,6 +428,7 @@ Rules:
 - `sokoban_move` illegal attempt: `illegal_action=true`, `counts_as_move=false`
 - `sokoban_undo` success/failure: `illegal_action=false`, `counts_as_move=false`
 - Query tools: both false
+- `state_mutating=true` only when board/counters actually change; failed moves and failed undo return `state_mutating=false`
 
 This preserves clean illegal-move metrics and avoids counting undo as forward move.
 

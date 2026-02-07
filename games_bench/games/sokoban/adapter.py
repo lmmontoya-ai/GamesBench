@@ -104,7 +104,7 @@ class SokobanGameAdapter:
             result=self._error_result(f"unknown tool: {name}"),
             meta={
                 "state_mutating": False,
-                "illegal_action": True,
+                "illegal_action": False,
                 "action_kind": "query",
                 "counts_as_move": False,
             },
@@ -119,7 +119,7 @@ class SokobanGameAdapter:
     def default_instructions(self) -> str:
         if self._instructions is not None:
             return self._instructions
-        return default_instructions()
+        return default_instructions(tool_prefix=self._tool_prefix)
 
     def format_state(self) -> str:
         return self.env.format_prompt_state(
