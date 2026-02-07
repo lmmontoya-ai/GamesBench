@@ -1,4 +1,12 @@
 Image mode notes:
 - Trust the rendered board as the source of truth.
-- Keep symbol semantics synchronized with the board legend.
+- Visual legend:
+  - dark gray tiles = walls (`#`)
+  - tan tiles = floor (` `)
+  - yellow circle markers = goals (`.`)
+  - brown crates = boxes (`$`)
+  - teal crates = boxes on goals (`*`)
+  - red token = player (`@`)
+  - blue token = player on goal (`+`)
+- Optional row/column labels may be shown; they are coordinates, not entities.
 - Still make exactly one tool call per turn.
