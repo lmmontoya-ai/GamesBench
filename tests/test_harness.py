@@ -134,6 +134,30 @@ class TestHarness(unittest.TestCase):
                 state_image_renderer=lambda _adapter: {"mime_type": "image/png"},
             )
 
+    def test_meta_illegal_action_overrides_result_ok_for_counting(self) -> None:
+        adapter = DummyAdapter()
+
+        def non_illegal_failure(
+            _name: str, _arguments: dict[str, Any]
+        ) -> ToolExecution:
+            return ToolExecution(
+                result={"ok": False, "state": {"moves": 0}, "error": "cannot undo"},
+                meta={
+                    "state_mutating": False,
+                    "illegal_action": False,
+                    "action_kind": "undo",
+                    "counts_as_move": False,
+                },
+            )
+
+        adapter.execute_tool = non_illegal_failure  # type: ignore[method-assign]
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=1)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(result.illegal_moves, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

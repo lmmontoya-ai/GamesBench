@@ -1,0 +1,4 @@
+Image mode notes:
+- Trust the rendered board as the source of truth.
+- Keep symbol semantics synchronized with the board legend.
+- Still make exactly one tool call per turn.
