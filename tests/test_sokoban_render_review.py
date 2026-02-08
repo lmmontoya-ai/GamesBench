@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -114,6 +115,97 @@ class TestSokobanRenderReview(unittest.TestCase):
             self.assertTrue(html_files)
             self.assertIn("Sokoban Playback", html_files[0].read_text())
 
+    def test_render_generates_ascii_playback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _build_recorded_run(tmp)
+            out_dir = Path(tmp) / "renders_ascii"
+
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "sokoban-render",
+                    "--run-dir",
+                    str(run_dir),
+                    "--out-dir",
+                    str(out_dir),
+                    "--format",
+                    "ascii",
+                    "--max-episodes",
+                    "1",
+                ],
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = sokoban_render.main()
+            self.assertEqual(rc, 0)
+
+            provider, model, run_id = sokoban_render._extract_run_parts(run_dir)
+            bundle_dir = out_dir / provider / model / run_id
+            txt_files = list(bundle_dir.glob("episode_*/playback.txt"))
+            self.assertTrue(txt_files)
+            playback = txt_files[0].read_text()
+            self.assertIn("Step 0:", playback)
+            self.assertIn("Action:", playback)
+
+    def test_render_episode_filter_ignores_nonstandard_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _build_recorded_run(tmp)
+            bad_recording = run_dir / "recordings" / "episode_bad.json"
+            bad_recording.write_text(json.dumps({"metadata": {}, "steps": []}))
+            out_dir = Path(tmp) / "renders_filter"
+
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "sokoban-render",
+                    "--run-dir",
+                    str(run_dir),
+                    "--out-dir",
+                    str(out_dir),
+                    "--format",
+                    "ascii",
+                    "--episode-id",
+                    "0",
+                ],
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = sokoban_render.main()
+            self.assertEqual(rc, 0)
+
+            provider, model, run_id = sokoban_render._extract_run_parts(run_dir)
+            bundle_dir = out_dir / provider / model / run_id
+            self.assertTrue((bundle_dir / "episode_0" / "playback.txt").exists())
+
+    def test_render_consumes_optional_extension_fields(self) -> None:
+        recording = {
+            "metadata": {},
+            "summary": {"total_pushes": 3},
+            "steps": [
+                {
+                    "action": {
+                        "name": "sokoban_move",
+                        "arguments": {"direction": "right"},
+                    },
+                    "action_type": "push",
+                    "totals": {"moves": 1, "illegal_moves": 0, "tool_calls": 1},
+                    "state_after": {
+                        "width": 3,
+                        "height": 3,
+                        "walls": [],
+                        "boxes": [[1, 1]],
+                        "goals": [[1, 2]],
+                        "player": [1, 0],
+                    },
+                }
+            ],
+        }
+        ascii_output = sokoban_render._render_ascii(recording)
+        self.assertIn("Action type: push", ascii_output)
+        html_output = sokoban_render._render_html(recording)
+        self.assertIn('"action_type": "push"', html_output)
+        self.assertIn('"total_pushes": 3', html_output)
+
     @unittest.skipUnless(
         PILImage is not None, "pillow required for review image rendering"
     )
@@ -150,6 +242,68 @@ class TestSokobanRenderReview(unittest.TestCase):
             self.assertTrue(before_images)
             self.assertTrue(after_images)
             self.assertIn("Sokoban Review", html_files[0].read_text())
+
+    @unittest.skipUnless(
+        PILImage is not None, "pillow required for review image rendering"
+    )
+    def test_review_handles_malformed_state_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            recording_path = Path(tmp) / "episode_9999.json"
+            recording = {
+                "metadata": {
+                    "episode_id": 9999,
+                    "prompt_variant": "minimal",
+                    "tools_variant": "move_only",
+                    "initial_state": {"bad": "state"},
+                },
+                "summary": {"total_pushes": 1},
+                "steps": [
+                    {
+                        "index": 1,
+                        "state_before": {"bad": "state"},
+                        "state_after": {"bad": "next"},
+                        "action": {
+                            "name": "sokoban_move",
+                            "arguments": {"direction": "right"},
+                        },
+                        "action_type": "push",
+                        "legal": False,
+                        "totals": {"moves": 0, "illegal_moves": 1, "tool_calls": 1},
+                    }
+                ],
+            }
+            recording_path.write_text(json.dumps(recording))
+            out_dir = Path(tmp) / "reviews"
+
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "sokoban-review",
+                    "--recording",
+                    str(recording_path),
+                    "--out-dir",
+                    str(out_dir),
+                    "--image-tile-size",
+                    "24",
+                ],
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = sokoban_review.main()
+            self.assertEqual(rc, 0)
+
+            html_path = (
+                out_dir
+                / "unknown"
+                / "unknown"
+                / "recording"
+                / "episode_9999"
+                / "index.html"
+            )
+            self.assertTrue(html_path.exists())
+            html = html_path.read_text()
+            self.assertIn("state image rendering failed:", html)
+            self.assertIn('"action_type": "push"', html)
 
 
 if __name__ == "__main__":
