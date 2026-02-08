@@ -1,0 +1,20 @@
+{
+  "models": {
+    "openrouter": ["openai/gpt-4.1-mini"]
+  },
+  "out_dir": "artifacts/runs",
+  "games": {
+    "sokoban": {
+      "procgen_grid_sizes": ["8x8", "10x10"],
+      "procgen_box_counts": [2, 3],
+      "procgen_levels_per_combo": 2,
+      "procgen_seed": 42,
+      "procgen_wall_density": 0.08,
+      "procgen_scramble_steps": 24,
+      "runs_per_level": 1,
+      "max_turns": 300,
+      "prompt_variants": ["minimal", "with_deadlock_warnings"],
+      "tool_variants": ["move_only", "all_tools"]
+    }
+  }
+}

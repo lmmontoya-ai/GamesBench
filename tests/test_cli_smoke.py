@@ -79,6 +79,12 @@ def _sokoban_args(out_dir: str, *, record: bool) -> argparse.Namespace:
         no_record_raw=False,
         level_sets=None,
         level_ids=["starter-authored-v1:1"],
+        procgen_grid_sizes=None,
+        procgen_box_counts=None,
+        procgen_levels_per_combo=None,
+        procgen_seed=None,
+        procgen_wall_density=None,
+        procgen_scramble_steps=None,
         max_levels=None,
         max_optimal_moves=None,
         runs_per_level=1,
@@ -159,6 +165,48 @@ class TestCliSmoke(unittest.TestCase):
             self.assertEqual(rc, 0)
             payload = json.loads(stdout.getvalue())
             self.assertEqual(len(payload["run_dirs"]), 1)
+
+    def test_cli_run_sokoban_procgen_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", ["games-bench"]):
+                with contextlib.redirect_stdout(stdout):
+                    rc = bench_cli.main(
+                        [
+                            "run",
+                            "sokoban",
+                            "--provider",
+                            "cli",
+                            "--cli-cmd",
+                            'python -c "print(\'{\\"name\\":\\"sokoban_move\\",\\"arguments\\":{\\"direction\\":\\"right\\"}}\')"',
+                            "--procgen-grid-size",
+                            "8x8",
+                            "--procgen-box-count",
+                            "2",
+                            "--procgen-levels-per-combo",
+                            "1",
+                            "--procgen-seed",
+                            "5",
+                            "--runs-per-level",
+                            "1",
+                            "--max-turns",
+                            "1",
+                            "--prompt-variant",
+                            "minimal",
+                            "--tools-variant",
+                            "move_only",
+                            "--out-dir",
+                            tmp,
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+            run_config = json.loads(
+                (Path(payload["run_dirs"][0]) / "run_config.json").read_text()
+            )
+            self.assertEqual(run_config["level_source"], "procgen")
+            self.assertTrue(run_config["procgen"]["enabled"])
 
     def test_cli_run_config_mode_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
