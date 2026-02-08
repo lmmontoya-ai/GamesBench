@@ -13,7 +13,7 @@ from games_bench.bench.common import add_common_batch_arguments
 from games_bench.games.hanoi.adapter import HanoiGameAdapter
 from games_bench.games.hanoi.env import TowerOfHanoiEnv, tool_schemas
 from games_bench.games.hanoi.prompts import (
-    default_instructions,
+    DEFAULT_TEMPLATE,
     format_instructions,
     with_image_instructions,
 )
@@ -46,25 +46,25 @@ class ToolVariant:
 DEFAULT_PROMPT_VARIANTS = {
     "minimal": PromptVariant(
         name="minimal",
-        instructions=default_instructions(),
+        instructions=DEFAULT_TEMPLATE,
         include_legal_moves=False,
         include_action_space=False,
     ),
     "legal_moves": PromptVariant(
         name="legal_moves",
-        instructions=default_instructions(),
+        instructions=DEFAULT_TEMPLATE,
         include_legal_moves=True,
         include_action_space=False,
     ),
     "action_space": PromptVariant(
         name="action_space",
-        instructions=default_instructions(),
+        instructions=DEFAULT_TEMPLATE,
         include_legal_moves=False,
         include_action_space=True,
     ),
     "full": PromptVariant(
         name="full",
-        instructions=default_instructions(),
+        instructions=DEFAULT_TEMPLATE,
         include_legal_moves=True,
         include_action_space=True,
     ),
@@ -87,11 +87,12 @@ DEFAULT_TOOL_VARIANTS = {
 
 def default_hanoi_config() -> dict[str, Any]:
     return {
+        "n_pegs": [3],
         "n_disks": [3],
         "runs_per_variant": 3,
         "max_turns": 200,
         "start_peg": 0,
-        "goal_peg": 2,
+        "goal_peg": None,
         "prompt_variants": ["minimal"],
         "tool_variants": ["move_only"],
         "state_format": "text",
@@ -172,6 +173,34 @@ def _parse_int_list(values: Iterable[str]) -> list[int]:
     return result
 
 
+def _resolve_start_goal_pegs(
+    *,
+    n_pegs: int,
+    start_peg_value: int | None,
+    goal_peg_value: int | None,
+) -> tuple[int, int]:
+    if n_pegs < 3:
+        raise SystemExit(f"n_pegs must be >= 3, got {n_pegs}")
+
+    start_peg = 0 if start_peg_value is None else int(start_peg_value)
+    goal_peg = (n_pegs - 1) if goal_peg_value is None else int(goal_peg_value)
+    max_idx = n_pegs - 1
+
+    if start_peg < 0 or start_peg >= n_pegs:
+        raise SystemExit(
+            f"start_peg={start_peg} is out of range for n_pegs={n_pegs} "
+            f"(valid: 0..{max_idx})."
+        )
+    if goal_peg < 0 or goal_peg >= n_pegs:
+        raise SystemExit(
+            f"goal_peg={goal_peg} is out of range for n_pegs={n_pegs} "
+            f"(valid: 0..{max_idx})."
+        )
+    if start_peg == goal_peg:
+        raise SystemExit("start_peg and goal_peg must be different.")
+    return (start_peg, goal_peg)
+
+
 def _resolve_models(
     provider: str, config: dict[str, Any] | None, fallback: str | None
 ) -> list[str]:
@@ -202,7 +231,7 @@ def _load_prompt_variants(path: str) -> dict[str, PromptVariant]:
         name = item["name"]
         variants[name] = PromptVariant(
             name=name,
-            instructions=item.get("instructions", default_instructions()),
+            instructions=item.get("instructions", DEFAULT_TEMPLATE),
             include_legal_moves=bool(item.get("include_legal_moves", False)),
             include_action_space=bool(item.get("include_action_space", False)),
         )
@@ -422,6 +451,7 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def add_hanoi_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--n-pegs", action="append", default=None)
     parser.add_argument("--n-disks", action="append", default=None)
     parser.add_argument("--start-peg", type=int, default=None)
     parser.add_argument("--goal-peg", type=int, default=None)
@@ -508,12 +538,25 @@ def run_batch(
     if not models:
         raise SystemExit("No models provided. Use --model or config.json.")
 
+    n_pegs_arg = getattr(args, "n_pegs", None)
+    n_pegs_list = (
+        _parse_int_list(n_pegs_arg)
+        if n_pegs_arg is not None
+        else _parse_int_list([str(x) for x in config.get("n_pegs", [3])])
+    )
+    if not n_pegs_list:
+        raise SystemExit("No peg counts provided. Use --n-pegs or config n_pegs.")
+    if any(n_pegs < 3 for n_pegs in n_pegs_list):
+        raise SystemExit("All n_pegs values must be >= 3.")
+
     n_disks_arg = getattr(args, "n_disks", None)
     n_disks_list = (
         _parse_int_list(n_disks_arg)
         if n_disks_arg is not None
         else _parse_int_list([str(x) for x in config.get("n_disks", [3])])
     )
+    if not n_disks_list:
+        raise SystemExit("No disk counts provided. Use --n-disks or config n_disks.")
     runs_per_variant_arg = getattr(args, "runs_per_variant", None)
     runs_per_variant = (
         runs_per_variant_arg
@@ -531,13 +574,21 @@ def run_batch(
     )
     out_dir_base = _resolve_out_dir_base(out_dir_base, game_name)
     start_peg_arg = getattr(args, "start_peg", None)
-    start_peg = (
-        start_peg_arg if start_peg_arg is not None else int(config.get("start_peg", 0))
+    start_peg_value = (
+        int(start_peg_arg) if start_peg_arg is not None else config.get("start_peg", 0)
     )
     goal_peg_arg = getattr(args, "goal_peg", None)
-    goal_peg = (
-        goal_peg_arg if goal_peg_arg is not None else int(config.get("goal_peg", 2))
+    goal_peg_value = (
+        int(goal_peg_arg) if goal_peg_arg is not None else config.get("goal_peg")
     )
+    resolved_start_goal_by_n_pegs = {
+        str(n_pegs): _resolve_start_goal_pegs(
+            n_pegs=n_pegs,
+            start_peg_value=(None if start_peg_value is None else int(start_peg_value)),
+            goal_peg_value=(None if goal_peg_value is None else int(goal_peg_value)),
+        )
+        for n_pegs in n_pegs_list
+    }
     provider_retries_arg = getattr(args, "provider_retries", None)
     provider_retries = (
         provider_retries_arg
@@ -643,7 +694,8 @@ def run_batch(
         out_dir = Path(out_dir_base) / provider_name / model_slug / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        full_tool_schemas = tool_schemas()
+        default_schema_n_pegs = n_pegs_list[0]
+        full_tool_schemas = tool_schemas(n_pegs=default_schema_n_pegs)
         tool_schemas_by_variant = {
             variant.name: (
                 [t for t in full_tool_schemas if t["name"] in variant.allowed_tools]
@@ -652,6 +704,10 @@ def run_batch(
             )
             for variant in selected_tool_variants
         }
+        tool_schemas_by_n_pegs = {
+            str(n_pegs): tool_schemas(n_pegs=n_pegs)
+            for n_pegs in sorted(set(n_pegs_list))
+        }
 
         run_config = {
             "run_id": run_id,
@@ -659,15 +715,21 @@ def run_batch(
             "game": game_name,
             "provider": provider_name,
             "model": model_name,
+            "n_pegs": n_pegs_list,
             "n_disks": n_disks_list,
-            "start_peg": start_peg,
-            "goal_peg": goal_peg,
+            "start_peg": start_peg_value,
+            "goal_peg": goal_peg_value,
+            "start_goal_by_n_pegs": {
+                key: {"start_peg": value[0], "goal_peg": value[1]}
+                for key, value in resolved_start_goal_by_n_pegs.items()
+            },
             "runs_per_variant": runs_per_variant,
             "max_turns": max_turns,
             "prompt_variants": [asdict(v) for v in selected_prompt_variants],
             "tool_variants": [asdict(v) for v in selected_tool_variants],
             "tool_schemas": full_tool_schemas,
             "tool_schemas_by_variant": tool_schemas_by_variant,
+            "tool_schemas_by_n_pegs": tool_schemas_by_n_pegs,
             "state_format": state_format,
             "image_size": f"{image_size[0]}x{image_size[1]}",
             "image_labels": image_labels,
@@ -695,146 +757,161 @@ def run_batch(
             traces_path.open("w") as trace_file,
             raw_path.open("w") if record_raw else open(os.devnull, "w") as raw_file,
         ):
-            for n_disks in n_disks_list:
-                for prompt_variant in selected_prompt_variants:
-                    for tool_variant in selected_tool_variants:
-                        variant_id = (
-                            f"n{n_disks}__prompt={prompt_variant.name}"
-                            f"__tools={tool_variant.name}"
-                        )
-                        for run_idx in range(runs_per_variant):
-                            env = TowerOfHanoiEnv(
-                                n_disks=n_disks,
-                                start_peg=start_peg,
-                                goal_peg=goal_peg,
-                                record_history=True,
-                                illegal_action_behavior="penalize",
+            for n_pegs in n_pegs_list:
+                start_peg, goal_peg = resolved_start_goal_by_n_pegs[str(n_pegs)]
+                for n_disks in n_disks_list:
+                    for prompt_variant in selected_prompt_variants:
+                        for tool_variant in selected_tool_variants:
+                            variant_id = (
+                                f"p{n_pegs}_n{n_disks}__prompt={prompt_variant.name}"
+                                f"__tools={tool_variant.name}"
                             )
-                            adapter = HanoiGameAdapter(env)
-                            instructions = format_instructions(
-                                prompt_variant.instructions,
-                                start_peg=env.start_peg,
-                                goal_peg=env.goal_peg,
-                            )
-                            if state_format in {"image", "both"}:
-                                instructions = with_image_instructions(instructions)
-                            state_formatter = (
-                                lambda a, pv=prompt_variant: a.env.format_prompt_state(
+                            for run_idx in range(runs_per_variant):
+                                env = TowerOfHanoiEnv(
+                                    n_disks=n_disks,
+                                    n_pegs=n_pegs,
+                                    start_peg=start_peg,
+                                    goal_peg=goal_peg,
+                                    record_history=True,
+                                    illegal_action_behavior="penalize",
+                                )
+                                adapter = HanoiGameAdapter(env)
+                                instruction_template = prompt_variant.instructions
+                                if state_format in {"image", "both"}:
+                                    instruction_template = with_image_instructions(
+                                        instruction_template
+                                    )
+                                instructions = format_instructions(
+                                    instruction_template,
+                                    n_pegs=env.n_pegs,
+                                    start_peg=env.start_peg,
+                                    goal_peg=env.goal_peg,
+                                )
+                                state_formatter = lambda a, pv=prompt_variant: a.env.format_prompt_state(
                                     include_legal_moves=pv.include_legal_moves,
                                     include_action_space=pv.include_action_space,
                                 )
-                            )
-                            if state_format == "image":
-                                state_formatter = lambda _a: "State image attached."
-                            state_image_renderer = None
-                            if state_format in {"image", "both"}:
+                                if state_format == "image":
+                                    state_formatter = lambda _a: "State image attached."
+                                state_image_renderer = None
+                                if state_format in {"image", "both"}:
 
-                                def state_image_renderer_payload(
-                                    a,
-                                    size=image_size,
-                                    labels=image_labels,
-                                    background=image_background,
-                                ):
-                                    image = render_hanoi_env_image(
-                                        a.env,
-                                        size=size,
-                                        label_pegs=labels,
-                                        background=background,
-                                    )
-                                    return _image_payload(image)
+                                    def state_image_renderer_payload(
+                                        a,
+                                        size=image_size,
+                                        labels=image_labels,
+                                        background=image_background,
+                                    ):
+                                        image = render_hanoi_env_image(
+                                            a.env,
+                                            size=size,
+                                            label_pegs=labels,
+                                            background=background,
+                                        )
+                                        return _image_payload(image)
 
-                                state_image_renderer = state_image_renderer_payload
-                            result = run_tool_calling_episode(
-                                adapter,
-                                provider,
-                                max_turns=max_turns,
-                                instructions=instructions,
-                                state_formatter=state_formatter,
-                                state_image_renderer=state_image_renderer,
-                                allowed_tools=tool_variant.allowed_tools,
-                                record_provider_raw=record_provider_raw,
-                            )
-                            if record_raw:
-                                tools = (
-                                    [
-                                        t
-                                        for t in tool_schemas()
-                                        if t["name"] in tool_variant.allowed_tools
-                                    ]
-                                    if tool_variant.allowed_tools is not None
-                                    else tool_schemas()
-                                )
-                                image_config = {
-                                    "size": image_size,
-                                    "labels": image_labels,
-                                    "background": image_background,
-                                }
-                                _write_raw_generations(
-                                    result.events,
-                                    out_file=raw_file,
-                                    episode_id=episode_id,
-                                    variant_id=variant_id,
+                                    state_image_renderer = state_image_renderer_payload
+                                result = run_tool_calling_episode(
+                                    adapter,
+                                    provider,
+                                    max_turns=max_turns,
                                     instructions=instructions,
-                                    tool_schemas=tools,
-                                    state_format=state_format,
-                                    image_config=image_config,
+                                    state_formatter=state_formatter,
+                                    state_image_renderer=state_image_renderer,
+                                    allowed_tools=tool_variant.allowed_tools,
+                                    record_provider_raw=record_provider_raw,
                                 )
-                            episode = {
-                                "episode_id": episode_id,
-                                "variant_id": variant_id,
-                                "run_idx": run_idx,
-                                "provider": provider_name,
-                                "model": model_name,
-                                "n_disks": result.game_metrics.get("n_disks", n_disks),
-                                "prompt_variant": prompt_variant.name,
-                                "tools_variant": tool_variant.name,
-                                "solved": result.solved,
-                                "move_count": result.game_metrics.get(
-                                    "move_count", result.move_count
-                                ),
-                                "optimal_steps": result.game_metrics.get(
-                                    "optimal_steps", result.optimal_steps
-                                ),
-                                "illegal_moves": result.illegal_moves,
-                                "tool_calls": result.tool_calls,
-                                "usage": result.usage,
-                                "cost": result.cost,
-                            }
-                            if record:
-                                recording = build_recording(
-                                    events=result.events,
-                                    metadata={
-                                        "episode_id": episode_id,
-                                        "variant_id": variant_id,
-                                        "run_idx": run_idx,
-                                        "provider": provider_name,
-                                        "model": model_name,
-                                        "n_disks": n_disks,
-                                        "prompt_variant": prompt_variant.name,
-                                        "tools_variant": tool_variant.name,
-                                        "solved": result.solved,
-                                    },
-                                )
-                                recording_path = (
-                                    recordings_dir / f"episode_{episode_id:04d}.json"
-                                )
-                                recording_path.write_text(
-                                    json.dumps(recording, indent=2)
-                                )
-                                episode["recording_file"] = str(recording_path)
-                            episodes.append(episode)
-                            ep_file.write(json.dumps(episode) + "\n")
-                            trace_file.write(
-                                json.dumps(
-                                    {
-                                        "episode_id": episode_id,
-                                        "variant_id": variant_id,
-                                        "events": result.events,
+                                if record_raw:
+                                    full_tools = tool_schemas(n_pegs=n_pegs)
+                                    tools = (
+                                        [
+                                            t
+                                            for t in full_tools
+                                            if t["name"] in tool_variant.allowed_tools
+                                        ]
+                                        if tool_variant.allowed_tools is not None
+                                        else full_tools
+                                    )
+                                    image_config = {
+                                        "size": image_size,
+                                        "labels": image_labels,
+                                        "background": image_background,
                                     }
+                                    _write_raw_generations(
+                                        result.events,
+                                        out_file=raw_file,
+                                        episode_id=episode_id,
+                                        variant_id=variant_id,
+                                        instructions=instructions,
+                                        tool_schemas=tools,
+                                        state_format=state_format,
+                                        image_config=image_config,
+                                    )
+                                episode = {
+                                    "episode_id": episode_id,
+                                    "variant_id": variant_id,
+                                    "run_idx": run_idx,
+                                    "provider": provider_name,
+                                    "model": model_name,
+                                    "n_pegs": result.game_metrics.get("n_pegs", n_pegs),
+                                    "n_disks": result.game_metrics.get(
+                                        "n_disks", n_disks
+                                    ),
+                                    "start_peg": env.start_peg,
+                                    "goal_peg": env.goal_peg,
+                                    "prompt_variant": prompt_variant.name,
+                                    "tools_variant": tool_variant.name,
+                                    "solved": result.solved,
+                                    "move_count": result.game_metrics.get(
+                                        "move_count", result.move_count
+                                    ),
+                                    "optimal_steps": result.game_metrics.get(
+                                        "optimal_steps", result.optimal_steps
+                                    ),
+                                    "illegal_moves": result.illegal_moves,
+                                    "tool_calls": result.tool_calls,
+                                    "usage": result.usage,
+                                    "cost": result.cost,
+                                }
+                                if record:
+                                    recording = build_recording(
+                                        events=result.events,
+                                        metadata={
+                                            "episode_id": episode_id,
+                                            "variant_id": variant_id,
+                                            "run_idx": run_idx,
+                                            "provider": provider_name,
+                                            "model": model_name,
+                                            "n_pegs": n_pegs,
+                                            "n_disks": n_disks,
+                                            "start_peg": start_peg,
+                                            "goal_peg": goal_peg,
+                                            "prompt_variant": prompt_variant.name,
+                                            "tools_variant": tool_variant.name,
+                                            "solved": result.solved,
+                                        },
+                                    )
+                                    recording_path = (
+                                        recordings_dir
+                                        / f"episode_{episode_id:04d}.json"
+                                    )
+                                    recording_path.write_text(
+                                        json.dumps(recording, indent=2)
+                                    )
+                                    episode["recording_file"] = str(recording_path)
+                                episodes.append(episode)
+                                ep_file.write(json.dumps(episode) + "\n")
+                                trace_file.write(
+                                    json.dumps(
+                                        {
+                                            "episode_id": episode_id,
+                                            "variant_id": variant_id,
+                                            "events": result.events,
+                                        }
+                                    )
+                                    + "\n"
                                 )
-                                + "\n"
-                            )
-                            episode_id += 1
+                                episode_id += 1
 
         summary = {"overall": _compute_metrics(episodes), "variants": {}}
         for episode in episodes:

@@ -101,6 +101,28 @@ class TestRenderReviewPathParsing(unittest.TestCase):
             sokoban_review._episode_id_from_path(Path("episode_bad.json"))
         )
 
+    def test_hanoi_render_normalized_steps_respects_n_pegs_metadata(self) -> None:
+        recording = {
+            "metadata": {"n_disks": 2, "n_pegs": 4, "start_peg": 0},
+            "steps": [
+                {
+                    "index": 0,
+                    "action": {
+                        "name": "hanoi_move",
+                        "arguments": {"from_peg": 0, "to_peg": 1},
+                    },
+                    "state_after": {
+                        "n_disks": 2,
+                        "n_pegs": 4,
+                        "pegs": [[2], [1], [], []],
+                    },
+                    "totals": {"moves": 1, "illegal_moves": 0, "tool_calls": 1},
+                }
+            ],
+        }
+        steps = hanoi_render._normalized_steps(recording)
+        self.assertEqual(len(steps[0]["state_before"]["pegs"]), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

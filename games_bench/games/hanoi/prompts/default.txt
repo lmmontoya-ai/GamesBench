@@ -1,6 +1,6 @@
 You are solving Tower of Hanoi.
 Goal: move all disks from peg {start_peg} (start) to peg {goal_peg} (goal).
-- Pegs are indexed 0, 1, 2.
+- There are {n_pegs} pegs, indexed from 0 to {max_peg_index}.
 - Disks are integers; 1 is smallest.
 - Only move the top disk of a peg.
 - Never place a larger disk on a smaller disk.

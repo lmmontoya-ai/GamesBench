@@ -23,7 +23,7 @@ class HanoiGameAdapter:
         self._instructions = instructions
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        return tool_schemas(tool_prefix=self._tool_prefix)
+        return tool_schemas(tool_prefix=self._tool_prefix, n_pegs=self.env.n_pegs)
 
     def execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
         mutating = False
@@ -81,7 +81,9 @@ class HanoiGameAdapter:
         if self._instructions is not None:
             return self._instructions
         return default_instructions(
-            start_peg=self.env.start_peg, goal_peg=self.env.goal_peg
+            n_pegs=self.env.n_pegs,
+            start_peg=self.env.start_peg,
+            goal_peg=self.env.goal_peg,
         )
 
     def format_state(self) -> str:
@@ -91,6 +93,7 @@ class HanoiGameAdapter:
 
     def episode_metrics(self) -> dict[str, Any]:
         return {
+            "n_pegs": self.env.n_pegs,
             "n_disks": self.env.n_disks,
             "move_count": self.env.move_count,
             "optimal_steps": self.env.optimal_steps(),

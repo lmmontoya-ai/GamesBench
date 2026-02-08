@@ -55,6 +55,22 @@ class TestHanoiAdapterMeta(unittest.TestCase):
         self.assertTrue(execution.meta["illegal_action"])
         self.assertFalse(execution.meta["counts_as_move"])
 
+    def test_schemas_and_instructions_reflect_peg_count(self) -> None:
+        env = TowerOfHanoiEnv(n_disks=2, n_pegs=4, goal_peg=3)
+        adapter = HanoiGameAdapter(env)
+        move_schema = next(
+            schema
+            for schema in adapter.tool_schemas()
+            if schema["name"] == "hanoi_move"
+        )
+        self.assertEqual(
+            move_schema["parameters"]["properties"]["from_peg"]["maximum"], 3
+        )
+        self.assertEqual(
+            move_schema["parameters"]["properties"]["to_peg"]["maximum"], 3
+        )
+        self.assertIn("0 to 3", adapter.default_instructions())
+
 
 if __name__ == "__main__":
     unittest.main()

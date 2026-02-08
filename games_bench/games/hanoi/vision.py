@@ -35,6 +35,9 @@ def render_hanoi_image(
     peg_y_top = int(height * 0.2)
     peg_y_bottom = int(height * 0.82)
     span = max(1, peg_count - 1)
+    peg_spacing = (
+        (width - 2 * margin_x) / span if peg_count > 1 else (width - 2 * margin_x)
+    )
     peg_x_positions = [
         int(margin_x + i * (width - 2 * margin_x) / span) for i in range(peg_count)
     ]
@@ -55,8 +58,8 @@ def render_hanoi_image(
             )
 
     disk_h = max(10, int(height * 0.05))
-    min_w = max(30, int(width * 0.08))
-    max_w = max(120, int(width * 0.28))
+    max_w = max(32, min(int(width * 0.28), int(peg_spacing * 0.82)))
+    min_w = max(16, int(max_w * 0.3))
     base_height = max(10, int(height * 0.03))
     base_top = min(height - base_height - 6, peg_y_bottom + 6)
     base_bottom = base_top + base_height

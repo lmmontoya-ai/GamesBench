@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, TypeAlias
 
 PegIndex: TypeAlias = int
 Disk: TypeAlias = int
 Action: TypeAlias = tuple[PegIndex, PegIndex]
 
-ACTION_SPACE: tuple[Action, ...] = (
-    (0, 1),
-    (0, 2),
-    (1, 0),
-    (1, 2),
-    (2, 0),
-    (2, 1),
-)
+MIN_PEGS = 3
+
+
+@lru_cache(maxsize=None)
+def action_space_for_n_pegs(n_pegs: int) -> tuple[Action, ...]:
+    if isinstance(n_pegs, bool) or not isinstance(n_pegs, int):
+        raise TypeError(f"n_pegs must be int, got {type(n_pegs).__name__}")
+    if n_pegs < MIN_PEGS:
+        raise ValueError(f"n_pegs must be >= {MIN_PEGS}, got {n_pegs}")
+    return tuple(
+        (from_peg, to_peg)
+        for from_peg in range(n_pegs)
+        for to_peg in range(n_pegs)
+        if from_peg != to_peg
+    )
+
+
+# Backward-compatible 3-peg action space constant.
+ACTION_SPACE: tuple[Action, ...] = action_space_for_n_pegs(MIN_PEGS)
 
 
 class HanoiError(Exception):
@@ -39,18 +51,20 @@ class HanoiState:
     """Immutable snapshot of a Tower of Hanoi configuration.
 
     Representation notes:
-      - `pegs` is a 3-tuple of stacks, each stack listed bottom->top.
+      - `pegs` is a tuple of stacks (length `n_pegs`), each listed bottom->top.
       - Disk sizes are integers 1..n, where 1 is the smallest.
-      - `disk_positions[d-1]` gives the peg index (0..2) holding disk `d`.
+      - `disk_positions[d-1]` gives the peg index (0..n_pegs-1) holding disk `d`.
     """
 
     n_disks: int
-    pegs: tuple[tuple[Disk, ...], tuple[Disk, ...], tuple[Disk, ...]]
+    n_pegs: int
+    pegs: tuple[tuple[Disk, ...], ...]
     disk_positions: tuple[PegIndex, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "n_disks": self.n_disks,
+            "n_pegs": self.n_pegs,
             "pegs": [list(p) for p in self.pegs],
             "disk_positions": list(self.disk_positions),
         }
@@ -67,18 +81,25 @@ def _validate_n_disks(n_disks: int) -> None:
         raise ValueError(f"n_disks must be >= 1, got {n_disks}")
 
 
-def _validate_peg_index(peg: int) -> None:
+def _validate_n_pegs(n_pegs: int) -> None:
+    if isinstance(n_pegs, bool) or not isinstance(n_pegs, int):
+        raise TypeError(f"n_pegs must be int, got {type(n_pegs).__name__}")
+    if n_pegs < MIN_PEGS:
+        raise ValueError(f"n_pegs must be >= {MIN_PEGS}, got {n_pegs}")
+
+
+def _validate_peg_index(peg: int, n_pegs: int) -> None:
     if isinstance(peg, bool) or not isinstance(peg, int):
         raise TypeError(f"peg index must be int, got {type(peg).__name__}")
-    if peg < 0 or peg > 2:
-        raise InvalidPegError(f"peg index must be in [0, 2], got {peg}")
+    if peg < 0 or peg >= n_pegs:
+        raise InvalidPegError(f"peg index must be in [0, {n_pegs - 1}], got {peg}")
 
 
-def _parse_action(action: object) -> Action:
+def _parse_action(action: object, action_space: tuple[Action, ...]) -> Action:
     if isinstance(action, int) and not isinstance(action, bool):
-        if 0 <= action < len(ACTION_SPACE):
-            return ACTION_SPACE[action]
-        raise InvalidActionError(f"action int must be in [0, {len(ACTION_SPACE) - 1}]")
+        if 0 <= action < len(action_space):
+            return action_space[action]
+        raise InvalidActionError(f"action int must be in [0, {len(action_space) - 1}]")
     if isinstance(action, tuple) and len(action) == 2:
         from_peg, to_peg = action
     elif isinstance(action, list) and len(action) == 2:
@@ -96,18 +117,49 @@ def _parse_action(action: object) -> Action:
     return (from_peg, to_peg)
 
 
-def state_schema() -> dict[str, Any]:
+@lru_cache(maxsize=None)
+def _optimal_hanoi_steps(n_disks: int, n_pegs: int) -> int:
+    if n_disks < 0:
+        raise ValueError(f"n_disks must be >= 0, got {n_disks}")
+    if n_disks == 0:
+        return 0
+    if n_disks == 1:
+        return 1
+    if n_pegs == MIN_PEGS:
+        return (1 << n_disks) - 1
+
+    best: int | None = None
+    for split in range(1, n_disks):
+        candidate = 2 * _optimal_hanoi_steps(split, n_pegs) + _optimal_hanoi_steps(
+            n_disks - split, n_pegs - 1
+        )
+        if best is None or candidate < best:
+            best = candidate
+
+    if best is None:
+        return (1 << n_disks) - 1
+    return best
+
+
+def state_schema(*, n_pegs: int = MIN_PEGS) -> dict[str, Any]:
     """JSON schema for HanoiState, suitable for OpenAPI/function-calling tooling."""
 
+    _validate_n_pegs(n_pegs)
+    max_peg_index = n_pegs - 1
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "n_disks": {"type": "integer", "minimum": 1},
+            "n_pegs": {
+                "type": "integer",
+                "minimum": n_pegs,
+                "maximum": n_pegs,
+            },
             "pegs": {
                 "type": "array",
-                "minItems": 3,
-                "maxItems": 3,
+                "minItems": n_pegs,
+                "maxItems": n_pegs,
                 "items": {
                     "type": "array",
                     "items": {"type": "integer", "minimum": 1},
@@ -116,23 +168,33 @@ def state_schema() -> dict[str, Any]:
             },
             "disk_positions": {
                 "type": "array",
-                "items": {"type": "integer", "minimum": 0, "maximum": 2},
-                "description": "disk_positions[d-1] is the peg holding disk d.",
+                "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": max_peg_index,
+                },
+                "description": ("disk_positions[d-1] is the peg index holding disk d."),
             },
         },
-        "required": ["n_disks", "pegs", "disk_positions"],
+        "required": ["n_disks", "n_pegs", "pegs", "disk_positions"],
     }
 
 
-def tool_schemas(*, tool_prefix: str = "hanoi") -> list[dict[str, Any]]:
+def tool_schemas(
+    *, tool_prefix: str = "hanoi", n_pegs: int = MIN_PEGS
+) -> list[dict[str, Any]]:
     """Tool schemas (JSON/OpenAPI-style) for LLM tool-calling integrations."""
+
+    _validate_n_pegs(n_pegs)
+    max_peg_index = n_pegs - 1
+    action_space = action_space_for_n_pegs(n_pegs)
 
     move_params = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "from_peg": {"type": "integer", "minimum": 0, "maximum": 2},
-            "to_peg": {"type": "integer", "minimum": 0, "maximum": 2},
+            "from_peg": {"type": "integer", "minimum": 0, "maximum": max_peg_index},
+            "to_peg": {"type": "integer", "minimum": 0, "maximum": max_peg_index},
         },
         "required": ["from_peg", "to_peg"],
     }
@@ -147,14 +209,24 @@ def tool_schemas(*, tool_prefix: str = "hanoi") -> list[dict[str, Any]]:
         "additionalProperties": False,
         "properties": {
             "action": {
-                "description": "Either an int in [0,5] or a pair [from_peg,to_peg].",
+                "description": (
+                    "Either an int action index or a pair [from_peg,to_peg]."
+                ),
                 "anyOf": [
-                    {"type": "integer", "minimum": 0, "maximum": len(ACTION_SPACE) - 1},
+                    {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": len(action_space) - 1,
+                    },
                     {
                         "type": "array",
                         "minItems": 2,
                         "maxItems": 2,
-                        "items": {"type": "integer", "minimum": 0, "maximum": 2},
+                        "items": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": max_peg_index,
+                        },
                     },
                 ],
             }
@@ -162,7 +234,7 @@ def tool_schemas(*, tool_prefix: str = "hanoi") -> list[dict[str, Any]]:
         "required": ["action"],
     }
 
-    state = state_schema()
+    state = state_schema(n_pegs=n_pegs)
     result_schema = {
         "type": "object",
         "additionalProperties": False,
@@ -200,13 +272,19 @@ def tool_schemas(*, tool_prefix: str = "hanoi") -> list[dict[str, Any]]:
         },
         {
             "name": f"{tool_prefix}_move",
-            "description": "Move the top disk from one peg to another (pegs are 0,1,2).",
+            "description": (
+                "Move the top disk from one peg to another "
+                f"(valid peg indices: 0..{max_peg_index})."
+            ),
             "parameters": move_params,
             "response_schema": result_schema,
         },
         {
             "name": f"{tool_prefix}_reset",
-            "description": "Reset the puzzle to the initial configuration with n_disks on peg 0.",
+            "description": (
+                "Reset the puzzle to the initial configuration with "
+                "n_disks on the configured start peg."
+            ),
             "parameters": reset_params,
             "response_schema": result_schema,
         },
@@ -247,7 +325,11 @@ def tool_schemas(*, tool_prefix: str = "hanoi") -> list[dict[str, Any]]:
                             "type": "array",
                             "minItems": 2,
                             "maxItems": 2,
-                            "items": {"type": "integer", "minimum": 0, "maximum": 2},
+                            "items": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": max_peg_index,
+                            },
                         },
                     },
                 },
@@ -304,8 +386,9 @@ class TowerOfHanoiEnv:
         self,
         n_disks: int = 3,
         *,
+        n_pegs: int = MIN_PEGS,
         start_peg: PegIndex = 0,
-        goal_peg: PegIndex = 2,
+        goal_peg: PegIndex | None = None,
         step_penalty: float = 0.0,
         illegal_move_penalty: float = -1.0,
         solve_reward: float = 1.0,
@@ -315,16 +398,19 @@ class TowerOfHanoiEnv:
         record_history: bool = False,
     ) -> None:
         _validate_n_disks(n_disks)
-        _validate_peg_index(start_peg)
-        _validate_peg_index(goal_peg)
-        if start_peg == goal_peg:
+        _validate_n_pegs(n_pegs)
+        resolved_goal_peg = n_pegs - 1 if goal_peg is None else goal_peg
+        _validate_peg_index(start_peg, n_pegs)
+        _validate_peg_index(resolved_goal_peg, n_pegs)
+        if start_peg == resolved_goal_peg:
             raise ValueError("start_peg and goal_peg must be different")
         if max_steps is not None and max_steps < 1:
             raise ValueError("max_steps must be >= 1")
 
         self.n_disks = n_disks
+        self.n_pegs = n_pegs
         self.start_peg = start_peg
-        self.goal_peg = goal_peg
+        self.goal_peg = resolved_goal_peg
 
         self.step_penalty = float(step_penalty)
         self.illegal_move_penalty = float(illegal_move_penalty)
@@ -334,7 +420,8 @@ class TowerOfHanoiEnv:
         self.max_steps = max_steps
         self.record_history = record_history
 
-        self._pegs: list[list[Disk]] = [[], [], []]
+        self._action_space = action_space_for_n_pegs(n_pegs)
+        self._pegs: list[list[Disk]] = [[] for _ in range(n_pegs)]
         self._disk_positions: list[PegIndex] = []
         self.move_count = 0
         self.step_count = 0
@@ -344,12 +431,12 @@ class TowerOfHanoiEnv:
 
     @property
     def action_space(self) -> tuple[Action, ...]:
-        """All 6 directed moves (from_peg,to_peg) with from_peg != to_peg."""
+        """All directed moves (from_peg,to_peg) with from_peg != to_peg."""
 
-        return ACTION_SPACE
+        return self._action_space
 
     def encode_action(self, action: Action) -> int:
-        """Map a (from_peg,to_peg) action to an integer in [0,5]."""
+        """Map a (from_peg,to_peg) action to an integer action index."""
 
         try:
             return self.action_space.index(action)
@@ -359,7 +446,7 @@ class TowerOfHanoiEnv:
             ) from exc
 
     def decode_action(self, action: int) -> Action:
-        """Map an integer in [0,5] to a (from_peg,to_peg) action."""
+        """Map an integer action index to a (from_peg,to_peg) action."""
 
         if isinstance(action, bool) or not isinstance(action, int):
             raise TypeError(f"action must be int, got {type(action).__name__}")
@@ -374,7 +461,7 @@ class TowerOfHanoiEnv:
             _validate_n_disks(n_disks)
             self.n_disks = n_disks
 
-        self._pegs = [[], [], []]
+        self._pegs = [[] for _ in range(self.n_pegs)]
         self._pegs[self.start_peg] = _expected_stack(self.n_disks)
         self._disk_positions = [self.start_peg for _ in range(self.n_disks)]
 
@@ -384,20 +471,25 @@ class TowerOfHanoiEnv:
         return self.get_state()
 
     def get_state(self) -> HanoiState:
-        pegs = (tuple(self._pegs[0]), tuple(self._pegs[1]), tuple(self._pegs[2]))
+        pegs = tuple(tuple(peg) for peg in self._pegs)
         positions = tuple(self._disk_positions)
-        return HanoiState(n_disks=self.n_disks, pegs=pegs, disk_positions=positions)
+        return HanoiState(
+            n_disks=self.n_disks,
+            n_pegs=self.n_pegs,
+            pegs=pegs,
+            disk_positions=positions,
+        )
 
     def is_solved(self) -> bool:
         return self._pegs[self.goal_peg] == _expected_stack(self.n_disks)
 
     def get_legal_moves(self) -> list[Action]:
         legal: list[Action] = []
-        for from_peg in range(3):
+        for from_peg in range(self.n_pegs):
             if not self._pegs[from_peg]:
                 continue
             disk = self._pegs[from_peg][-1]
-            for to_peg in range(3):
+            for to_peg in range(self.n_pegs):
                 if to_peg == from_peg:
                     continue
                 if not self._pegs[to_peg] or self._pegs[to_peg][-1] > disk:
@@ -405,8 +497,8 @@ class TowerOfHanoiEnv:
         return legal
 
     def move(self, from_peg: PegIndex, to_peg: PegIndex) -> HanoiState:
-        _validate_peg_index(from_peg)
-        _validate_peg_index(to_peg)
+        _validate_peg_index(from_peg, self.n_pegs)
+        _validate_peg_index(to_peg, self.n_pegs)
         if from_peg == to_peg:
             raise IllegalMoveError("from_peg and to_peg must be different")
         if not self._pegs[from_peg]:
@@ -427,7 +519,7 @@ class TowerOfHanoiEnv:
         return self.get_state()
 
     def optimal_steps(self) -> int:
-        return (1 << self.n_disks) - 1
+        return _optimal_hanoi_steps(self.n_disks, self.n_pegs)
 
     def _goal_prefix_potential(self) -> int:
         goal_stack = self._pegs[self.goal_peg]
@@ -443,7 +535,7 @@ class TowerOfHanoiEnv:
         """Apply an action.
 
         Action formats:
-          - int in [0,5], where `action_space[i]` is (from_peg,to_peg)
+          - int in [0, len(action_space)-1], where action_space[i]=(from_peg,to_peg)
           - (from_peg,to_peg) as a tuple/list of two ints
         """
 
@@ -457,7 +549,7 @@ class TowerOfHanoiEnv:
         }
 
         try:
-            from_peg, to_peg = _parse_action(action)
+            from_peg, to_peg = _parse_action(action, self.action_space)
         except InvalidActionError as exc:
             info["illegal_action"] = True
             info["error"] = str(exc)
