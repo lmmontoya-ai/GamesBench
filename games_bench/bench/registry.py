@@ -39,6 +39,7 @@ def load_builtin_benchmarks() -> None:
     if _REGISTRY:
         return
     from games_bench.bench import hanoi as hanoi_bench
+    from games_bench.bench import sokoban as sokoban_bench
     from games_bench.games.hanoi import render as hanoi_render
     from games_bench.games.hanoi import review as hanoi_review
 
@@ -52,5 +53,15 @@ def load_builtin_benchmarks() -> None:
             adapter_factory=hanoi_bench.build_hanoi_adapter,
             render_main=hanoi_render.main,
             review_main=hanoi_review.main,
+        )
+    )
+    register_benchmark(
+        BenchSpec(
+            name="sokoban",
+            description="Sokoban",
+            batch_runner=sokoban_bench.run_batch,
+            add_arguments=sokoban_bench.add_sokoban_arguments,
+            default_config=sokoban_bench.default_sokoban_config,
+            adapter_factory=sokoban_bench.build_sokoban_adapter,
         )
     )
