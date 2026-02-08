@@ -35,6 +35,15 @@ def add_common_batch_arguments(
         default=None,
         help="Base backoff (seconds) for provider retries (default from config or 1.0).",
     )
+    parser.add_argument(
+        "--stream-debug",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable provider streaming debug logs (OpenRouter only). "
+            "Use --no-stream-debug to force disable."
+        ),
+    )
     parser.add_argument("--cli-cmd", help="Command to run for provider=cli.")
     parser.add_argument(
         "--no-stdin",

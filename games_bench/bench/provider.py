@@ -26,7 +26,12 @@ def _require_env(name: str) -> str:
 def _build_provider(args: argparse.Namespace) -> Any:
     if args.provider == "openrouter":
         model = args.model or _require_env("OPENROUTER_MODEL")
-        return OpenRouterProvider(model=model, max_retries=2, retry_backoff_s=1.0)
+        return OpenRouterProvider(
+            model=model,
+            max_retries=2,
+            retry_backoff_s=1.0,
+            stream_debug=bool(args.stream_debug),
+        )
     if args.provider == "openai":
         model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
         return OpenAIResponsesProvider(model=model)
@@ -86,6 +91,12 @@ def main() -> int:
     )
     parser.add_argument("--max-turns", type=int, default=200)
     parser.add_argument("--timeout-s", type=int, default=300)
+    parser.add_argument(
+        "--stream-debug",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable provider streaming debug logs (OpenRouter only).",
+    )
     parser.add_argument("--cli-cmd", help="Command to run for provider=cli.")
     parser.add_argument(
         "--no-stdin",

@@ -19,6 +19,7 @@ class TestBatchCli(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
         output = stdout.getvalue()
         self.assertIn("--provider", output)
+        self.assertIn("--stream-debug", output)
         self.assertIn("--game", output)
         self.assertNotIn("--level-set", output)
         self.assertNotIn("--n-disks", output)
