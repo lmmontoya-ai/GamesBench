@@ -26,7 +26,7 @@ from games_bench.llm import (
     build_recording,
     run_tool_calling_episode,
 )
-from games_bench.config import load_config
+from games_bench.config import load_config, merge_dicts, normalize_games_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,9 +181,15 @@ def _resolve_models(
             return [str(m) for m in models]
         if isinstance(models, dict):
             if provider in models:
-                return [str(m) for m in models[provider]]
+                provider_models = models[provider]
+                if isinstance(provider_models, list):
+                    return [str(m) for m in provider_models]
+                return [str(provider_models)]
             if "default" in models:
-                return [str(m) for m in models["default"]]
+                default_models = models["default"]
+                if isinstance(default_models, list):
+                    return [str(m) for m in default_models]
+                return [str(default_models)]
     if provider in {"openrouter", "openai"}:
         return [fallback] if fallback else []
     return [fallback or "default"]
@@ -201,6 +207,20 @@ def _load_prompt_variants(path: str) -> dict[str, PromptVariant]:
             include_action_space=bool(item.get("include_action_space", False)),
         )
     return variants
+
+
+def _merge_config_for_game(
+    raw_config: dict[str, Any] | None,
+    *,
+    game_name: str,
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    global_defaults, games_map = normalize_games_config(
+        raw_config or {}, default_game=game_name
+    )
+    return merge_dicts(
+        defaults, merge_dicts(global_defaults, games_map.get(game_name, {}))
+    )
 
 
 def _parse_size(value: str) -> tuple[int, int]:
@@ -834,7 +854,12 @@ def run_batch(
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    config = load_config(args.config) if args.config else {}
+    raw_config = load_config(args.config) if args.config else {}
+    config = _merge_config_for_game(
+        raw_config,
+        game_name="hanoi",
+        defaults=default_hanoi_config(),
+    )
     run_dirs = run_batch(args, config, game_name="hanoi")
     print(json.dumps({"run_dirs": [str(p) for p in run_dirs]}, indent=2))
     return 0

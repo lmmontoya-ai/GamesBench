@@ -7,7 +7,7 @@
     "sokoban": {
       "level_ids": ["starter-authored-v1:1", "starter-authored-v1:2"],
       "prompt_variants": ["minimal", "full"],
-      "tool_variants": ["move_only", "all_tools"],
+      "tool_variants": ["move_and_query", "all_tools"],
       "runs_per_level": 2,
       "max_turns": 300,
       "detect_deadlocks": true,

@@ -4,7 +4,7 @@ import argparse
 import tempfile
 import unittest
 
-from games_bench.bench.hanoi import run_batch
+from games_bench.bench import hanoi as hanoi_bench
 
 
 class TestHanoiBatch(unittest.TestCase):
@@ -43,7 +43,7 @@ class TestHanoiBatch(unittest.TestCase):
             no_image_labels=False,
         )
         with self.assertRaises(SystemExit) as ctx:
-            run_batch(args, config={}, game_name="hanoi")
+            hanoi_bench.run_batch(args, config={}, game_name="hanoi")
         self.assertIn("does not support state_format", str(ctx.exception))
 
     def test_run_batch_does_not_mutate_retry_args(self) -> None:
@@ -81,9 +81,27 @@ class TestHanoiBatch(unittest.TestCase):
                 image_labels=False,
                 no_image_labels=False,
             )
-            run_batch(args, config={}, game_name="hanoi")
+            hanoi_bench.run_batch(args, config={}, game_name="hanoi")
             self.assertIsNone(args.provider_retries)
             self.assertIsNone(args.provider_backoff)
+
+    def test_resolve_models_accepts_scalar_provider_value(self) -> None:
+        models = hanoi_bench._resolve_models(
+            "cli",
+            config={"models": {"cli": "custom-cli-model"}},
+            fallback=None,
+        )
+        self.assertEqual(models, ["custom-cli-model"])
+
+    def test_merge_config_for_game_applies_defaults_and_overrides(self) -> None:
+        merged = hanoi_bench._merge_config_for_game(
+            {"max_turns": 12, "games": {"hanoi": {"runs_per_variant": 4}}},
+            game_name="hanoi",
+            defaults=hanoi_bench.default_hanoi_config(),
+        )
+        self.assertEqual(merged["max_turns"], 12)
+        self.assertEqual(merged["runs_per_variant"], 4)
+        self.assertEqual(merged["tool_variants"], ["move_only"])
 
 
 if __name__ == "__main__":
