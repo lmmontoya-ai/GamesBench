@@ -788,13 +788,23 @@ Tests:
 
 Deliverables:
 
-1. Additional approved level sets
-2. README/AGENTS/CLAUDE updates
-3. Example `configs/sokoban.json`
+1. README updates for multi-game run/render/review workflows
+2. CLI smoke matrix for `run`, `render`, `review`
+3. Example `configs/sokoban.json` (valid prompt/tool combinations)
+4. (Optional expansion track) additional approved level sets
 
 Gate:
 
 - Full repo tests pass; no layering regressions.
+
+Phase 7 implementation status:
+
+- Completed:
+  - `README.md` updated for Hanoi + Sokoban workflows
+  - `configs/sokoban.json` aligned with prompt/tool compatibility rules
+  - CLI smoke coverage added for both games (`tests/test_cli_smoke.py`)
+- Pending (optional expansion):
+  - Add more licensed Sokoban level sets beyond `starter-authored-v1`
 
 ---
 
@@ -808,3 +818,4 @@ Sokoban v1 is done when all are true:
 4. Benchmark outputs include denominator-aware optimal metrics.
 5. Deadlock/undo/illegal semantics are implemented exactly as specified.
 6. Render/review tooling works with recording compatibility guarantees.
+7. CLI run/render/review smoke tests pass for both games.
