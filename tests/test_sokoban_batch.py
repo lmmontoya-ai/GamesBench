@@ -5,8 +5,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from games_bench.bench.sokoban import run_batch
+from games_bench.bench import sokoban as sokoban_bench
 
 
 def _base_args(*, out_dir: str, state_format: str = "text") -> argparse.Namespace:
@@ -51,20 +53,20 @@ class TestSokobanBatch(unittest.TestCase):
     def test_image_state_format_preflight_for_unsupported_provider(self) -> None:
         args = _base_args(out_dir="artifacts/test_runs", state_format="image")
         with self.assertRaises(SystemExit) as ctx:
-            run_batch(args, config={}, game_name="sokoban")
+            sokoban_bench.run_batch(args, config={}, game_name="sokoban")
         self.assertIn("does not support state_format", str(ctx.exception))
 
     def test_run_batch_does_not_mutate_retry_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = _base_args(out_dir=tmp, state_format="text")
-            run_batch(args, config={}, game_name="sokoban")
+            sokoban_bench.run_batch(args, config={}, game_name="sokoban")
             self.assertIsNone(args.provider_retries)
             self.assertIsNone(args.provider_backoff)
 
     def test_summary_includes_denominator_aware_optimal_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = _base_args(out_dir=tmp, state_format="text")
-            run_dirs = run_batch(args, config={}, game_name="sokoban")
+            run_dirs = sokoban_bench.run_batch(args, config={}, game_name="sokoban")
             self.assertEqual(len(run_dirs), 1)
 
             summary_path = Path(run_dirs[0]) / "summary.json"
@@ -76,6 +78,244 @@ class TestSokobanBatch(unittest.TestCase):
             self.assertIn("n_with_optimal_pushes", overall)
             self.assertGreaterEqual(overall["n_with_optimal_moves"], 1)
             self.assertGreaterEqual(overall["n_with_optimal_pushes"], 1)
+
+    def test_run_batch_writes_expected_artifacts_and_episode_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            run_dirs = sokoban_bench.run_batch(args, config={}, game_name="sokoban")
+            self.assertEqual(len(run_dirs), 1)
+            run_dir = Path(run_dirs[0])
+
+            required_files = [
+                "run_config.json",
+                "episodes.jsonl",
+                "traces.jsonl",
+                "summary.json",
+            ]
+            for name in required_files:
+                self.assertTrue((run_dir / name).exists(), name)
+
+            first_episode = json.loads(
+                (run_dir / "episodes.jsonl").read_text().splitlines()[0]
+            )
+            required_fields = {
+                "episode_id",
+                "variant_id",
+                "run_idx",
+                "provider",
+                "model",
+                "level_id",
+                "level_set",
+                "prompt_variant",
+                "tools_variant",
+                "n_boxes",
+                "grid_size",
+                "solved",
+                "deadlocked",
+                "move_count",
+                "push_count",
+                "illegal_moves",
+                "tool_calls",
+                "boxes_on_goals",
+                "boxes_on_goals_ratio",
+                "optimal_moves",
+                "optimal_pushes",
+                "known_optimal",
+                "move_ratio",
+                "push_ratio",
+                "usage",
+                "cost",
+            }
+            self.assertTrue(required_fields.issubset(first_episode.keys()))
+
+    def test_prompt_tool_incompatibility_raises(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.prompt_variants = ["full"]
+        args.tool_variants = ["move_only"]
+        with self.assertRaises(SystemExit) as ctx:
+            sokoban_bench.run_batch(args, config={}, game_name="sokoban")
+        self.assertIn("requires tool 'sokoban_get_legal_moves'", str(ctx.exception))
+
+    def test_move_only_variant_overrides_terminal_on_deadlock(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        seen_terminal_on_deadlock: list[bool] = []
+
+        def fake_episode(adapter, provider, **kwargs):
+            seen_terminal_on_deadlock.append(adapter.env.terminal_on_deadlock)
+            return SimpleNamespace(
+                solved=False,
+                game_metrics={
+                    "level_id": adapter.env.level.level_id,
+                    "n_boxes": adapter.env.level.n_boxes,
+                    "grid_size": (adapter.env.level.height, adapter.env.level.width),
+                    "deadlocked": False,
+                    "move_count": 0,
+                    "push_count": 0,
+                    "boxes_on_goals": 0,
+                    "optimal_moves": adapter.env.level.optimal_moves,
+                    "optimal_pushes": adapter.env.level.optimal_pushes,
+                    "known_optimal": adapter.env.level.known_optimal,
+                },
+                move_count=0,
+                illegal_moves=0,
+                tool_calls=0,
+                usage=None,
+                cost=None,
+                events=[],
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args.out_dir = tmp
+            with patch(
+                "games_bench.bench.sokoban.run_tool_calling_episode", fake_episode
+            ):
+                sokoban_bench.run_batch(
+                    args,
+                    config={"terminal_on_deadlock": False},
+                    game_name="sokoban",
+                )
+
+        self.assertEqual(seen_terminal_on_deadlock, [True])
+
+    def test_select_levels_by_level_ids_dedupes(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = ["starter-authored-v1:2", "starter-authored-v1:2"]
+        args.level_sets = ["starter-authored-v1"]
+        levels = sokoban_bench._select_levels(args, config={})
+        self.assertEqual(
+            [level.level_id for level in levels], ["starter-authored-v1:2"]
+        )
+
+    def test_select_levels_filters_by_optimal_moves(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = None
+        args.level_sets = None
+        levels = sokoban_bench._select_levels(
+            args,
+            config={
+                "level_sets": ["starter-authored-v1"],
+                "max_optimal_moves": 1,
+            },
+        )
+        self.assertEqual(
+            [level.level_id for level in levels], ["starter-authored-v1:1"]
+        )
+
+    def test_select_levels_applies_max_levels(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = None
+        args.level_sets = ["starter-authored-v1"]
+        args.max_levels = 1
+        levels = sokoban_bench._select_levels(args, config={})
+        self.assertEqual(len(levels), 1)
+        self.assertEqual(levels[0].level_id, "starter-authored-v1:1")
+
+    def test_select_levels_raises_when_filter_removes_all(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = None
+        args.level_sets = ["starter-authored-v1"]
+        with self.assertRaises(SystemExit):
+            sokoban_bench._select_levels(args, config={"max_optimal_moves": 0})
+
+    def test_compute_metrics_handles_empty_input(self) -> None:
+        metrics = sokoban_bench._compute_metrics([])
+        self.assertEqual(metrics["episodes"], 0)
+        self.assertEqual(metrics["solve_rate"], 0.0)
+        self.assertIsNone(metrics["avg_moves"])
+        self.assertEqual(metrics["n_with_optimal_moves"], 0)
+
+    def test_compute_metrics_uses_solved_episodes_for_optimal_ratios(self) -> None:
+        episodes = [
+            {
+                "solved": True,
+                "deadlocked": False,
+                "move_count": 10,
+                "push_count": 5,
+                "illegal_moves": 1,
+                "tool_calls": 7,
+                "boxes_on_goals_ratio": 1.0,
+                "move_ratio": 2.0,
+                "push_ratio": 1.5,
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+                "cost": 0.1,
+            },
+            {
+                "solved": False,
+                "deadlocked": True,
+                "move_count": 20,
+                "push_count": 9,
+                "illegal_moves": 3,
+                "tool_calls": 8,
+                "boxes_on_goals_ratio": 0.5,
+                "move_ratio": 99.0,
+                "push_ratio": 99.0,
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+                "cost": 0.2,
+            },
+            {
+                "solved": True,
+                "deadlocked": False,
+                "move_count": 12,
+                "push_count": 6,
+                "illegal_moves": 2,
+                "tool_calls": 4,
+                "boxes_on_goals_ratio": 0.75,
+                "move_ratio": 1.5,
+                "push_ratio": None,
+                "usage": None,
+                "cost": None,
+            },
+        ]
+        metrics = sokoban_bench._compute_metrics(episodes)
+        self.assertEqual(metrics["episodes"], 3)
+        self.assertEqual(metrics["solved"], 2)
+        self.assertAlmostEqual(metrics["solve_rate"], 2 / 3)
+        self.assertEqual(metrics["deadlocked"], 1)
+        self.assertAlmostEqual(metrics["deadlock_rate"], 1 / 3)
+        self.assertAlmostEqual(metrics["avg_moves"], 14.0)
+        self.assertAlmostEqual(metrics["avg_pushes"], 20.0 / 3.0)
+        self.assertAlmostEqual(metrics["avg_illegal_moves"], 2.0)
+        self.assertAlmostEqual(metrics["avg_tool_calls"], 19.0 / 3.0)
+        self.assertAlmostEqual(metrics["avg_boxes_on_goals_ratio"], 0.75)
+        self.assertAlmostEqual(metrics["avg_move_ratio"], 1.75)
+        self.assertEqual(metrics["n_with_optimal_moves"], 2)
+        self.assertAlmostEqual(metrics["avg_push_ratio"], 1.5)
+        self.assertEqual(metrics["n_with_optimal_pushes"], 1)
+        self.assertEqual(
+            metrics["token_totals"],
+            {"prompt_tokens": 30.0, "completion_tokens": 15.0, "total_tokens": 45.0},
+        )
+        self.assertEqual(
+            metrics["token_avgs"],
+            {"prompt_tokens": 15.0, "completion_tokens": 7.5, "total_tokens": 22.5},
+        )
+        self.assertAlmostEqual(metrics["cost_total"], 0.3)
+        self.assertAlmostEqual(metrics["cost_avg"], 0.15)
+
+    def test_resolve_models_accepts_scalar_provider_value(self) -> None:
+        models = sokoban_bench._resolve_models(
+            "cli",
+            config={"models": {"cli": "custom-cli-model"}},
+            fallback=None,
+        )
+        self.assertEqual(models, ["custom-cli-model"])
+
+    def test_merge_config_for_game_applies_defaults_and_overrides(self) -> None:
+        merged = sokoban_bench._merge_config_for_game(
+            {
+                "max_turns": 77,
+                "games": {"sokoban": {"runs_per_level": 2}},
+            },
+            game_name="sokoban",
+            defaults=sokoban_bench.default_sokoban_config(),
+        )
+        self.assertEqual(merged["max_turns"], 77)
+        self.assertEqual(merged["runs_per_level"], 2)
+        self.assertEqual(merged["tool_variants"], ["move_only"])
 
 
 if __name__ == "__main__":

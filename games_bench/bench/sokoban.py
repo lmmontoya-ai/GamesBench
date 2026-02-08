@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from games_bench.bench.common import add_common_batch_arguments
-from games_bench.config import load_config
+from games_bench.config import load_config, merge_dicts, normalize_games_config
 from games_bench.games.sokoban.adapter import SokobanGameAdapter
 from games_bench.games.sokoban.env import SokobanEnv, SokobanLevel, tool_schemas
 from games_bench.games.sokoban.level_loader import (
@@ -187,9 +187,15 @@ def _resolve_models(
             return [str(m) for m in models]
         if isinstance(models, dict):
             if provider in models:
-                return [str(m) for m in models[provider]]
+                provider_models = models[provider]
+                if isinstance(provider_models, list):
+                    return [str(m) for m in provider_models]
+                return [str(provider_models)]
             if "default" in models:
-                return [str(m) for m in models["default"]]
+                default_models = models["default"]
+                if isinstance(default_models, list):
+                    return [str(m) for m in default_models]
+                return [str(default_models)]
     if provider in {"openrouter", "openai"}:
         return [fallback] if fallback else []
     return [fallback or "default"]
@@ -319,6 +325,20 @@ def _select_levels(
     return levels
 
 
+def _merge_config_for_game(
+    raw_config: dict[str, Any] | None,
+    *,
+    game_name: str,
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    global_defaults, games_map = normalize_games_config(
+        raw_config or {}, default_game=game_name
+    )
+    return merge_dicts(
+        defaults, merge_dicts(global_defaults, games_map.get(game_name, {}))
+    )
+
+
 def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     if not episodes:
         return {
@@ -344,14 +364,15 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
 
     solved_count = sum(1 for ep in episodes if ep.get("solved"))
     deadlocked_count = sum(1 for ep in episodes if ep.get("deadlocked"))
+    solved_episodes = [ep for ep in episodes if ep.get("solved")]
     move_ratios = [
         ratio
-        for ratio in (_as_float(ep.get("move_ratio")) for ep in episodes)
+        for ratio in (_as_float(ep.get("move_ratio")) for ep in solved_episodes)
         if ratio is not None
     ]
     push_ratios = [
         ratio
-        for ratio in (_as_float(ep.get("push_ratio")) for ep in episodes)
+        for ratio in (_as_float(ep.get("push_ratio")) for ep in solved_episodes)
         if ratio is not None
     ]
 
@@ -896,11 +917,21 @@ def run_batch(
                                 )
 
                             metrics = result.game_metrics
-                            move_ratio = _ratio(
-                                metrics.get("move_count"), metrics.get("optimal_moves")
+                            move_ratio = (
+                                _ratio(
+                                    metrics.get("move_count"),
+                                    metrics.get("optimal_moves"),
+                                )
+                                if result.solved
+                                else None
                             )
-                            push_ratio = _ratio(
-                                metrics.get("push_count"), metrics.get("optimal_pushes")
+                            push_ratio = (
+                                _ratio(
+                                    metrics.get("push_count"),
+                                    metrics.get("optimal_pushes"),
+                                )
+                                if result.solved
+                                else None
                             )
                             boxes_on_goals_ratio = _ratio(
                                 metrics.get("boxes_on_goals"), metrics.get("n_boxes")
@@ -993,7 +1024,12 @@ def run_batch(
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    config = load_config(args.config) if args.config else {}
+    raw_config = load_config(args.config) if args.config else {}
+    config = _merge_config_for_game(
+        raw_config,
+        game_name="sokoban",
+        defaults=default_sokoban_config(),
+    )
     run_dirs = run_batch(args, config, game_name="sokoban")
     print(json.dumps({"run_dirs": [str(p) for p in run_dirs]}, indent=2))
     return 0
