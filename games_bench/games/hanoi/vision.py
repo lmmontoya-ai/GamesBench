@@ -3,19 +3,10 @@ from __future__ import annotations
 import base64
 import colorsys
 import io
-from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from .env import HanoiState, TowerOfHanoiEnv
-
-
-@dataclass(frozen=True, slots=True)
-class StateImage:
-    mime_type: str
-    data_base64: str
-    data_url: str
-    width: int
-    height: int
+from ..vision_types import StateImage
 
 
 def render_hanoi_image(
@@ -29,7 +20,10 @@ def render_hanoi_image(
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("Missing pillow. Install with: uv sync --group viz") from exc
+        raise RuntimeError(
+            "Missing pillow. Install with: pip install 'games-bench[viz]' "
+            "or uv sync --group viz"
+        ) from exc
 
     width, height = size
     img = Image.new("RGB", (width, height), background)
