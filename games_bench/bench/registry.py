@@ -42,6 +42,8 @@ def load_builtin_benchmarks() -> None:
     from games_bench.bench import sokoban as sokoban_bench
     from games_bench.games.hanoi import render as hanoi_render
     from games_bench.games.hanoi import review as hanoi_review
+    from games_bench.games.sokoban import render as sokoban_render
+    from games_bench.games.sokoban import review as sokoban_review
 
     register_benchmark(
         BenchSpec(
@@ -63,5 +65,7 @@ def load_builtin_benchmarks() -> None:
             add_arguments=sokoban_bench.add_sokoban_arguments,
             default_config=sokoban_bench.default_sokoban_config,
             adapter_factory=sokoban_bench.build_sokoban_adapter,
+            render_main=sokoban_render.main,
+            review_main=sokoban_review.main,
         )
     )

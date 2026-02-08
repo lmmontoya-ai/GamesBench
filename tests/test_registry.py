@@ -52,6 +52,8 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(defaults_a, defaults_b)
         self.assertIsNot(defaults_a, defaults_b)
         self.assertIsNotNone(benchmark.adapter_factory)
+        self.assertIsNotNone(benchmark.render_main)
+        self.assertIsNotNone(benchmark.review_main)
 
     def test_unknown_entries_raise(self) -> None:
         load_builtin_games()
