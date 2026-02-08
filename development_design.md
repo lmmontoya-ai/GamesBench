@@ -806,6 +806,22 @@ Phase 7 implementation status:
 - Pending (optional expansion):
   - Add more licensed Sokoban level sets beyond `starter-authored-v1`
 
+### Phase 8: Procedural generation
+
+Deliverables:
+
+1. Game-layer procedural generator (`games/sokoban/procgen.py`) parameterized by grid size and box count
+2. Deterministic generation controls (`seed`) with benchmark/CLI integration
+3. Solvability guarantees via reverse-play generation and replay verification
+4. Config/CLI support in `bench/sokoban.py` and sample config file
+
+Tests:
+
+- Determinism and input validation
+- Generated-level structural validity (dimensions/boxes/goals)
+- Replay-to-solved verification from generated starts
+- Benchmark selection path + CLI smoke for `procgen_*` flags
+
 ---
 
 ## 20. Definition of Done (Sokoban v1)

@@ -18,6 +18,10 @@ from games_bench.games.sokoban.level_loader import (
     load_bundled_level_set,
     load_level_by_id,
 )
+from games_bench.games.sokoban.procgen import (
+    generate_procedural_levels,
+    parse_grid_size,
+)
 from games_bench.games.sokoban.prompts import (
     instructions_for_variant,
     with_image_instructions,
@@ -120,6 +124,12 @@ def default_sokoban_config() -> dict[str, Any]:
         "record_provider_raw": False,
         "provider_retries": 2,
         "provider_backoff": 1.0,
+        "procgen_grid_sizes": None,
+        "procgen_box_counts": None,
+        "procgen_levels_per_combo": 1,
+        "procgen_seed": 0,
+        "procgen_wall_density": 0.08,
+        "procgen_scramble_steps": None,
     }
 
 
@@ -221,6 +231,16 @@ def _parse_str_list(values: Iterable[str]) -> list[str]:
     return result
 
 
+def _parse_int_list(values: Iterable[str]) -> list[int]:
+    result: list[int] = []
+    for value in values:
+        for chunk in str(value).split(","):
+            chunk = chunk.strip()
+            if chunk:
+                result.append(int(chunk))
+    return result
+
+
 def _as_float(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -268,9 +288,151 @@ def _dedupe_levels(levels: Iterable[SokobanLevel]) -> list[SokobanLevel]:
     return deduped
 
 
+def _resolve_procgen_spec(
+    args: argparse.Namespace, config: dict[str, Any]
+) -> dict[str, Any] | None:
+    procgen_grid_sizes_arg = getattr(args, "procgen_grid_sizes", None)
+    procgen_box_counts_arg = getattr(args, "procgen_box_counts", None)
+
+    procgen_grid_sizes = (
+        _parse_str_list(procgen_grid_sizes_arg)
+        if procgen_grid_sizes_arg is not None
+        else _parse_str_list(config.get("procgen_grid_sizes", []) or [])
+    )
+    procgen_box_counts = (
+        _parse_int_list(procgen_box_counts_arg)
+        if procgen_box_counts_arg is not None
+        else _parse_int_list(config.get("procgen_box_counts", []) or [])
+    )
+
+    if not procgen_grid_sizes and not procgen_box_counts:
+        return None
+    if not procgen_grid_sizes or not procgen_box_counts:
+        raise SystemExit(
+            "Procedural mode requires both procgen_grid_sizes and procgen_box_counts."
+        )
+
+    grid_sizes: list[tuple[int, int]] = []
+    seen_grid_sizes: set[tuple[int, int]] = set()
+    for raw in procgen_grid_sizes:
+        parsed = parse_grid_size(raw)
+        if parsed not in seen_grid_sizes:
+            seen_grid_sizes.add(parsed)
+            grid_sizes.append(parsed)
+
+    box_counts: list[int] = []
+    seen_box_counts: set[int] = set()
+    for n_boxes in procgen_box_counts:
+        if n_boxes < 1:
+            raise SystemExit("procgen box counts must be >= 1")
+        if n_boxes not in seen_box_counts:
+            seen_box_counts.add(n_boxes)
+            box_counts.append(n_boxes)
+
+    levels_per_combo_arg = getattr(args, "procgen_levels_per_combo", None)
+    levels_per_combo = (
+        int(levels_per_combo_arg)
+        if levels_per_combo_arg is not None
+        else int(config.get("procgen_levels_per_combo", 1))
+    )
+    if levels_per_combo < 1:
+        raise SystemExit("procgen_levels_per_combo must be >= 1")
+
+    procgen_seed_arg = getattr(args, "procgen_seed", None)
+    procgen_seed = (
+        int(procgen_seed_arg)
+        if procgen_seed_arg is not None
+        else config.get("procgen_seed", 0)
+    )
+    if procgen_seed is not None:
+        procgen_seed = int(procgen_seed)
+
+    procgen_wall_density_arg = getattr(args, "procgen_wall_density", None)
+    procgen_wall_density = (
+        float(procgen_wall_density_arg)
+        if procgen_wall_density_arg is not None
+        else float(config.get("procgen_wall_density", 0.08))
+    )
+
+    procgen_scramble_steps_arg = getattr(args, "procgen_scramble_steps", None)
+    procgen_scramble_steps = (
+        int(procgen_scramble_steps_arg)
+        if procgen_scramble_steps_arg is not None
+        else config.get("procgen_scramble_steps")
+    )
+    if procgen_scramble_steps is not None:
+        procgen_scramble_steps = int(procgen_scramble_steps)
+        if procgen_scramble_steps < 1:
+            raise SystemExit("procgen_scramble_steps must be >= 1")
+
+    return {
+        "grid_sizes": grid_sizes,
+        "box_counts": box_counts,
+        "levels_per_combo": levels_per_combo,
+        "seed": procgen_seed,
+        "wall_density": procgen_wall_density,
+        "scramble_steps": procgen_scramble_steps,
+    }
+
+
+def _select_procgen_levels(spec: dict[str, Any]) -> list[SokobanLevel]:
+    levels: list[SokobanLevel] = []
+    combo_idx = 0
+    for width, height in spec["grid_sizes"]:
+        for n_boxes in spec["box_counts"]:
+            combo_seed = spec["seed"]
+            if combo_seed is not None:
+                combo_seed = int(combo_seed) + (combo_idx * 10_000)
+            level_id_prefix = (
+                f"procgen:{width}x{height}:b{n_boxes}:s"
+                f"{combo_seed if combo_seed is not None else 'random'}"
+            )
+            try:
+                levels.extend(
+                    generate_procedural_levels(
+                        width=width,
+                        height=height,
+                        n_boxes=n_boxes,
+                        count=spec["levels_per_combo"],
+                        seed=combo_seed,
+                        wall_density=spec["wall_density"],
+                        scramble_steps=spec["scramble_steps"],
+                        level_id_prefix=level_id_prefix,
+                    )
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise SystemExit(
+                    "Failed to generate procedural Sokoban levels for "
+                    f"{width}x{height}, n_boxes={n_boxes}: {exc}"
+                ) from exc
+            combo_idx += 1
+    return _dedupe_levels(levels)
+
+
 def _select_levels(
     args: argparse.Namespace, config: dict[str, Any]
 ) -> list[SokobanLevel]:
+    procgen_spec = _resolve_procgen_spec(args, config)
+    if procgen_spec is not None:
+        explicit_level_ids = getattr(args, "level_ids", None)
+        explicit_level_sets = getattr(args, "level_sets", None)
+        if explicit_level_ids is not None or explicit_level_sets is not None:
+            raise SystemExit(
+                "Do not mix --level-id/--level-set with procedural generation flags."
+            )
+        levels = _select_procgen_levels(procgen_spec)
+        max_levels_arg = getattr(args, "max_levels", None)
+        max_levels = (
+            max_levels_arg
+            if max_levels_arg is not None
+            else config.get("max_levels", 20)
+        )
+        if max_levels is not None:
+            levels = levels[: int(max_levels)]
+        if not levels:
+            raise SystemExit("No procedural Sokoban levels selected to run.")
+        return levels
+
     selected_level_ids = (
         _parse_str_list(getattr(args, "level_ids", None))
         if getattr(args, "level_ids", None) is not None
@@ -544,6 +706,16 @@ def _write_raw_generations(
 def add_sokoban_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--level-set", action="append", dest="level_sets", default=None)
     parser.add_argument("--level-id", action="append", dest="level_ids", default=None)
+    parser.add_argument(
+        "--procgen-grid-size", action="append", dest="procgen_grid_sizes", default=None
+    )
+    parser.add_argument(
+        "--procgen-box-count", action="append", dest="procgen_box_counts", default=None
+    )
+    parser.add_argument("--procgen-levels-per-combo", type=int, default=None)
+    parser.add_argument("--procgen-seed", type=int, default=None)
+    parser.add_argument("--procgen-wall-density", type=float, default=None)
+    parser.add_argument("--procgen-scramble-steps", type=int, default=None)
     parser.add_argument("--max-levels", type=int, default=None)
     parser.add_argument("--max-optimal-moves", type=int, default=None)
     parser.add_argument("--runs-per-level", type=int, default=None)
@@ -605,6 +777,7 @@ def run_batch(
     if not models:
         raise SystemExit("No models provided. Use --model or config.json.")
 
+    procgen_spec = _resolve_procgen_spec(args, config)
     levels = _select_levels(args, config)
 
     runs_per_level_arg = getattr(args, "runs_per_level", None)
@@ -790,6 +963,23 @@ def run_batch(
             "provider": provider_name,
             "model": model_name,
             "level_ids": [level.level_id for level in levels],
+            "level_source": "procgen" if procgen_spec is not None else "bundled",
+            "procgen": (
+                {
+                    "enabled": True,
+                    "grid_sizes": [
+                        f"{width}x{height}"
+                        for width, height in procgen_spec["grid_sizes"]
+                    ],
+                    "box_counts": list(procgen_spec["box_counts"]),
+                    "levels_per_combo": procgen_spec["levels_per_combo"],
+                    "seed": procgen_spec["seed"],
+                    "wall_density": procgen_spec["wall_density"],
+                    "scramble_steps": procgen_spec["scramble_steps"],
+                }
+                if procgen_spec is not None
+                else {"enabled": False}
+            ),
             "runs_per_level": runs_per_level,
             "max_turns": max_turns,
             "prompt_variants": [asdict(v) for v in selected_prompt_variants],

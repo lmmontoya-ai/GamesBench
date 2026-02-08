@@ -37,6 +37,8 @@ Run a single-game benchmark:
   - `uv run games-bench run hanoi --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"hanoi_move\\\",\\\"arguments\\\":{\\\"from_peg\\\":0,\\\"to_peg\\\":2}}\")"' --n-pegs 3 --n-disks 3 --runs-per-variant 1 --prompt-variant minimal --tools-variant move_only`
 - Sokoban:
   - `uv run games-bench run sokoban --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"sokoban_move\\\",\\\"arguments\\\":{\\\"direction\\\":\\\"right\\\"}}\")"' --level-id starter-authored-v1:1 --runs-per-level 1 --prompt-variant minimal --tools-variant move_only`
+  - Procedural Sokoban:
+    - `uv run games-bench run sokoban --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"sokoban_move\\\",\\\"arguments\\\":{\\\"direction\\\":\\\"right\\\"}}\")"' --procgen-grid-size 8x8 --procgen-box-count 2 --procgen-levels-per-combo 2 --procgen-seed 42 --runs-per-level 1 --prompt-variant minimal --tools-variant move_only`
 
 Run config-driven mode (multi-game capable):
 
@@ -54,7 +56,13 @@ Batch config precedence:
 - Global keys: `models`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`
 - Per-game keys under `"games"`:
   - Hanoi: `n_pegs`, `n_disks`, `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`
-  - Sokoban: `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
+  - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
+  - Sokoban (procedural): `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`, `procgen_seed`, `procgen_wall_density`, `procgen_scramble_steps`, plus standard run keys (`runs_per_level`, `prompt_variants`, etc.)
+
+Sokoban level-source rules:
+
+- Use either bundled levels (`level_sets` / `level_ids`) or procedural generation (`procgen_*`) for a run.
+- Procedural runs are deterministic when `procgen_seed` is set.
 
 Hanoi note:
 
@@ -64,6 +72,7 @@ See examples:
 
 - `configs/hanoi.json`
 - `configs/sokoban.json`
+- `configs/sokoban_procgen.json`
 
 ## Outputs
 

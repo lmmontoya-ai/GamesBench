@@ -46,6 +46,12 @@ from .prompts import (
     instructions_for_variant,
     with_image_instructions,
 )
+from .procgen import (
+    generate_procedural_level,
+    generate_procedural_level_with_solution,
+    generate_procedural_levels,
+    parse_grid_size,
+)
 from .vision import (
     StateImage,
     render_sokoban_env_image,
@@ -83,10 +89,14 @@ __all__ = [
     "instructions_for_variant",
     "is_deadlocked",
     "list_bundled_level_sets",
+    "generate_procedural_level",
+    "generate_procedural_level_with_solution",
+    "generate_procedural_levels",
     "load_bundled_level_set",
     "load_level_by_id",
     "load_level_metadata",
     "load_level_set",
+    "parse_grid_size",
     "parse_xsb_levels",
     "render_sokoban_env_image",
     "render_sokoban_image",

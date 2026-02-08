@@ -33,6 +33,12 @@ def _base_args(*, out_dir: str, state_format: str = "text") -> argparse.Namespac
         no_record_raw=False,
         level_sets=None,
         level_ids=["starter-authored-v1:1"],
+        procgen_grid_sizes=None,
+        procgen_box_counts=None,
+        procgen_levels_per_combo=None,
+        procgen_seed=None,
+        procgen_wall_density=None,
+        procgen_scramble_steps=None,
         max_levels=None,
         max_optimal_moves=None,
         runs_per_level=1,
@@ -216,6 +222,48 @@ class TestSokobanBatch(unittest.TestCase):
         args.level_sets = ["starter-authored-v1"]
         with self.assertRaises(SystemExit):
             sokoban_bench._select_levels(args, config={"max_optimal_moves": 0})
+
+    def test_select_levels_supports_procgen(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = None
+        args.level_sets = None
+        args.procgen_grid_sizes = ["8x8"]
+        args.procgen_box_counts = ["2"]
+        args.procgen_levels_per_combo = 2
+        args.procgen_seed = 9
+        args.procgen_wall_density = 0.0
+        args.procgen_scramble_steps = 12
+        levels = sokoban_bench._select_levels(args, config={})
+        self.assertEqual(len(levels), 2)
+        self.assertTrue(
+            all(level.level_id.startswith("procgen:8x8:b2") for level in levels)
+        )
+
+    def test_select_levels_rejects_mixed_static_and_procgen_flags(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.procgen_grid_sizes = ["8x8"]
+        args.procgen_box_counts = ["2"]
+        args.level_ids = ["starter-authored-v1:1"]
+        with self.assertRaises(SystemExit):
+            sokoban_bench._select_levels(args, config={})
+
+    def test_run_batch_procgen_records_procgen_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            args.level_ids = None
+            args.level_sets = None
+            args.procgen_grid_sizes = ["8x8"]
+            args.procgen_box_counts = ["2"]
+            args.procgen_levels_per_combo = 1
+            args.procgen_seed = 17
+            args.procgen_wall_density = 0.0
+            args.procgen_scramble_steps = 12
+
+            run_dirs = sokoban_bench.run_batch(args, config={}, game_name="sokoban")
+            run_config = json.loads((Path(run_dirs[0]) / "run_config.json").read_text())
+            self.assertEqual(run_config["level_source"], "procgen")
+            self.assertTrue(run_config["procgen"]["enabled"])
+            self.assertEqual(run_config["procgen"]["grid_sizes"], ["8x8"])
 
     def test_compute_metrics_handles_empty_input(self) -> None:
         metrics = sokoban_bench._compute_metrics([])

@@ -17,6 +17,7 @@ from games_bench.games.sokoban import (
     parse_xsb_levels,
     tool_schemas,
 )
+from games_bench.games.sokoban.factory import make_sokoban_env
 
 
 def _level_from_xsb(xsb: str, *, set_name: str = "unit"):
@@ -119,6 +120,21 @@ class TestSokobanLevelLoading(unittest.TestCase):
 
 
 class TestSokobanEnv(unittest.TestCase):
+    def test_factory_supports_procedural_generation(self) -> None:
+        env = make_sokoban_env(
+            procedural=True,
+            width=8,
+            height=8,
+            n_boxes=2,
+            procgen_seed=11,
+            procgen_wall_density=0.0,
+            procgen_scramble_steps=16,
+        )
+        self.assertEqual(env.level.width, 8)
+        self.assertEqual(env.level.height, 8)
+        self.assertEqual(env.level.n_boxes, 2)
+        self.assertFalse(env.is_solved())
+
     def test_reset_and_legal_moves(self) -> None:
         level = _level_from_xsb(
             """#####
