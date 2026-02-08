@@ -32,11 +32,19 @@ def load_builtin_games() -> None:
     if _REGISTRY:
         return
     from games_bench.games.hanoi.env import TowerOfHanoiEnv
+    from games_bench.games.sokoban.factory import make_sokoban_env
 
     register_game(
         GameSpec(
             name="hanoi",
             description="Tower of Hanoi",
             env_factory=TowerOfHanoiEnv,
+        )
+    )
+    register_game(
+        GameSpec(
+            name="sokoban",
+            description="Sokoban",
+            env_factory=make_sokoban_env,
         )
     )
