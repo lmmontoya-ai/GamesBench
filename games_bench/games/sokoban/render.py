@@ -10,6 +10,10 @@ def _load_recording(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _json_for_html_script(value: Any) -> str:
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def _safe_path_part(value: Any, *, fallback: str = "unknown") -> str:
     text = str(value).strip().replace("/", "_").replace("\\", "_")
     if text in {"", ".", ".."}:
@@ -119,6 +123,13 @@ def _normalized_steps(recording: dict[str, Any]) -> list[dict[str, Any]]:
     return [init_step, *steps]
 
 
+def _episode_id_from_path(path: Path) -> int | None:
+    suffix = path.stem.rsplit("_", 1)[-1]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
 def _render_ascii(recording: dict[str, Any]) -> str:
     lines: list[str] = []
     for index, step in enumerate(_normalized_steps(recording)):
@@ -128,25 +139,33 @@ def _render_ascii(recording: dict[str, Any]) -> str:
             f"illegal={totals.get('illegal_moves', 0)} tool_calls={totals.get('tool_calls', 0)}"
         )
         lines.append(f"Action: {step.get('action')}")
+        action_type = step.get("action_type")
+        if isinstance(action_type, str) and action_type:
+            lines.append(f"Action type: {action_type}")
         lines.append(_state_to_xsb(_state_payload(step)))
         lines.append("")
     return "\n".join(lines)
 
 
 def _render_html(recording: dict[str, Any]) -> str:
+    summary = recording.get("summary", {})
     payload = {
-        "metadata": recording.get("metadata", {}),
+        "metadata": {
+            **recording.get("metadata", {}),
+            "total_pushes": summary.get("total_pushes"),
+        },
         "steps": [
             {
                 "index": index,
                 "action": step.get("action"),
+                "action_type": step.get("action_type"),
                 "totals": step.get("totals", {}),
                 "xsb": _state_to_xsb(_state_payload(step)),
             }
             for index, step in enumerate(_normalized_steps(recording))
         ],
     }
-    data = json.dumps(payload)
+    data = _json_for_html_script(payload)
     template = """<!DOCTYPE html>
 <html>
 <head>
@@ -176,6 +195,8 @@ def _render_html(recording: dict[str, Any]) -> str:
     </div>
     <div class="panel">
       <h3>Action</h3>
+      <pre id="actionType"></pre>
+      <h3>Action Payload</h3>
       <pre id="action"></pre>
       <h3>Totals</h3>
       <pre id="totals"></pre>
@@ -187,6 +208,7 @@ def _render_html(recording: dict[str, Any]) -> str:
     const slider = document.getElementById("slider");
     const meta = document.getElementById("meta");
     const board = document.getElementById("board");
+    const actionTypeEl = document.getElementById("actionType");
     const actionEl = document.getElementById("action");
     const totalsEl = document.getElementById("totals");
     let idx = 0;
@@ -197,6 +219,7 @@ def _render_html(recording: dict[str, Any]) -> str:
       const step = steps[idx];
       meta.textContent = JSON.stringify(payload.metadata || {}) + ` | step ${step.index}`;
       board.textContent = step.xsb || "";
+      actionTypeEl.textContent = step.action_type || "";
       actionEl.textContent = JSON.stringify(step.action || {}, null, 2);
       totalsEl.textContent = JSON.stringify(step.totals || {}, null, 2);
       slider.value = idx;
@@ -236,9 +259,12 @@ def main() -> int:
 
     if args.episode_id:
         wanted = {int(value) for value in args.episode_id}
-        recordings = [
-            path for path in recordings if int(path.stem.split("_")[-1]) in wanted
-        ]
+        selected: list[Path] = []
+        for path in recordings:
+            episode_id = _episode_id_from_path(path)
+            if episode_id is not None and episode_id in wanted:
+                selected.append(path)
+        recordings = selected
     if args.max_episodes is not None:
         recordings = recordings[: args.max_episodes]
 

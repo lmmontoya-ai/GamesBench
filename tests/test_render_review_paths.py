@@ -52,6 +52,55 @@ class TestRenderReviewPathParsing(unittest.TestCase):
             self.assertEqual(sokoban_render._extract_run_parts(run_dir), expected)
             self.assertEqual(sokoban_review._extract_run_parts(run_dir), expected)
 
+    def test_html_templates_escape_script_terminators(self) -> None:
+        marker = "unsafe </script> marker"
+        hanoi_html = hanoi_render._render_html(
+            {"metadata": {"note": marker}, "steps": []}
+        )
+        self.assertIn("unsafe <\\/script> marker", hanoi_html)
+        self.assertNotIn(marker, hanoi_html)
+
+        hanoi_review_html = hanoi_review._html_template(
+            {"metadata": {"note": marker}, "steps": []}
+        )
+        self.assertIn("unsafe <\\/script> marker", hanoi_review_html)
+        self.assertNotIn(marker, hanoi_review_html)
+
+        sokoban_html = sokoban_render._render_html(
+            {"metadata": {"note": marker}, "steps": []}
+        )
+        self.assertIn("unsafe <\\/script> marker", sokoban_html)
+        self.assertNotIn(marker, sokoban_html)
+
+        sokoban_review_html = sokoban_review._html_template(
+            {"metadata": {"note": marker}, "steps": []}
+        )
+        self.assertIn("unsafe <\\/script> marker", sokoban_review_html)
+        self.assertNotIn(marker, sokoban_review_html)
+
+    def test_episode_id_helpers_ignore_non_numeric_suffix(self) -> None:
+        self.assertEqual(
+            hanoi_render._episode_id_from_path(Path("episode_0007.json")), 7
+        )
+        self.assertEqual(
+            hanoi_review._episode_id_from_path(Path("episode_0007.json")), 7
+        )
+        self.assertEqual(
+            sokoban_render._episode_id_from_path(Path("episode_0007.json")), 7
+        )
+        self.assertEqual(
+            sokoban_review._episode_id_from_path(Path("episode_0007.json")), 7
+        )
+
+        self.assertIsNone(hanoi_render._episode_id_from_path(Path("episode_bad.json")))
+        self.assertIsNone(hanoi_review._episode_id_from_path(Path("episode_bad.json")))
+        self.assertIsNone(
+            sokoban_render._episode_id_from_path(Path("episode_bad.json"))
+        )
+        self.assertIsNone(
+            sokoban_review._episode_id_from_path(Path("episode_bad.json"))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

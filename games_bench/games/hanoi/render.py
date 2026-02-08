@@ -12,6 +12,10 @@ def _load_recording(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _json_for_html_script(value: Any) -> str:
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def _safe_path_part(value: Any, *, fallback: str = "unknown") -> str:
     text = str(value).strip().replace("/", "_").replace("\\", "_")
     if text in {"", ".", ".."}:
@@ -75,6 +79,13 @@ def _normalized_recording(recording: dict[str, Any]) -> dict[str, Any]:
     return {**recording, "steps": steps}
 
 
+def _episode_id_from_path(path: Path) -> int | None:
+    suffix = path.stem.rsplit("_", 1)[-1]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
 def _render_ascii(recording: dict[str, Any]) -> str:
     lines = []
     steps = _normalized_steps(recording)
@@ -101,7 +112,7 @@ def _render_ascii(recording: dict[str, Any]) -> str:
 
 
 def _render_html(recording: dict[str, Any]) -> str:
-    data = json.dumps(_normalized_recording(recording))
+    data = _json_for_html_script(_normalized_recording(recording))
     template = """<!DOCTYPE html>
 <html>
 <head>
@@ -314,7 +325,12 @@ def main() -> int:
 
     if args.episode_id:
         wanted = {int(x) for x in args.episode_id}
-        recordings = [p for p in recordings if int(p.stem.split("_")[-1]) in wanted]
+        selected: list[Path] = []
+        for path in recordings:
+            episode_id = _episode_id_from_path(path)
+            if episode_id is not None and episode_id in wanted:
+                selected.append(path)
+        recordings = selected
     if args.max_episodes is not None:
         recordings = recordings[: args.max_episodes]
 

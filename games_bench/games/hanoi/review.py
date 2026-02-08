@@ -19,6 +19,10 @@ def _load_recording(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _json_for_html_script(value: Any) -> str:
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def _safe_path_part(value: Any, *, fallback: str = "unknown") -> str:
     text = str(value).strip().replace("/", "_").replace("\\", "_")
     if text in {"", ".", ".."}:
@@ -69,6 +73,13 @@ def _normalized_steps(recording: dict[str, Any]) -> list[dict[str, Any]]:
     return [init_step, *steps]
 
 
+def _episode_id_from_path(path: Path) -> int | None:
+    suffix = path.stem.rsplit("_", 1)[-1]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
 def _initial_state(n_disks: int, start_peg: int = 0) -> dict[str, Any]:
     pegs = [[] for _ in range(3)]
     pegs[start_peg] = list(range(n_disks, 0, -1))
@@ -108,7 +119,7 @@ def _render_image(
 
 
 def _html_template(payload: dict[str, Any]) -> str:
-    data = json.dumps(payload)
+    data = _json_for_html_script(payload)
     template = """<!DOCTYPE html>
 <html>
 <head>
@@ -149,7 +160,11 @@ def _html_template(payload: dict[str, Any]) -> str:
     </div>
     <div class="panel">
       <h3>Action</h3>
+      <pre id="actionType"></pre>
+      <h3>Action Payload</h3>
       <pre id="action"></pre>
+      <h3>Render Error</h3>
+      <pre id="renderError"></pre>
       <h3>Totals</h3>
       <pre id="totals"></pre>
     </div>
@@ -162,7 +177,9 @@ def _html_template(payload: dict[str, Any]) -> str:
     const imgBefore = document.getElementById('imgBefore');
     const imgAfter = document.getElementById('imgAfter');
     const promptEl = document.getElementById('prompt');
+    const actionTypeEl = document.getElementById('actionType');
     const actionEl = document.getElementById('action');
+    const renderErrorEl = document.getElementById('renderError');
     const totalsEl = document.getElementById('totals');
     let idx = 0;
     slider.max = Math.max(steps.length - 1, 0);
@@ -174,7 +191,9 @@ def _html_template(payload: dict[str, Any]) -> str:
       imgBefore.src = step.image_before || '';
       imgAfter.src = step.image_after || '';
       promptEl.textContent = step.prompt || '';
+      actionTypeEl.textContent = step.action_type || '';
       actionEl.textContent = JSON.stringify(step.action || {{}}, null, 2);
+      renderErrorEl.textContent = step.render_error || '';
       totalsEl.textContent = JSON.stringify(step.totals || {{}}, null, 2);
       slider.value = idx;
     }}
@@ -218,7 +237,12 @@ def main() -> int:
 
     if args.episode_id:
         wanted = {int(x) for x in args.episode_id}
-        recordings = [p for p in recordings if int(p.stem.split("_")[-1]) in wanted]
+        selected: list[Path] = []
+        for path in recordings:
+            episode_id = _episode_id_from_path(path)
+            if episode_id is not None and episode_id in wanted:
+                selected.append(path)
+        recordings = selected
     if args.max_episodes is not None:
         recordings = recordings[: args.max_episodes]
 
@@ -301,22 +325,30 @@ def main() -> int:
             )
             current_state = state_after
 
-            image_before = _render_image(
-                state_before,
-                size=size,
-                label_pegs=label_pegs,
-                background=args.image_background,
-            )
-            image_after = _render_image(
-                state_after,
-                size=size,
-                label_pegs=label_pegs,
-                background=args.image_background,
-            )
             before_path = episode_dir / f"state_before_{step_index:04d}.png"
             after_path = episode_dir / f"state_after_{step_index:04d}.png"
-            _save_png(image_before, before_path)
-            _save_png(image_after, after_path)
+            image_before_name = ""
+            image_after_name = ""
+            render_error: str | None = None
+            try:
+                image_before = _render_image(
+                    state_before,
+                    size=size,
+                    label_pegs=label_pegs,
+                    background=args.image_background,
+                )
+                image_after = _render_image(
+                    state_after,
+                    size=size,
+                    label_pegs=label_pegs,
+                    background=args.image_background,
+                )
+                _save_png(image_before, before_path)
+                _save_png(image_after, after_path)
+                image_before_name = before_path.name
+                image_after_name = after_path.name
+            except ValueError as exc:
+                render_error = f"state image rendering failed: {exc}"
 
             state_text = step.get("state_text")
             if state_text is None:
@@ -336,10 +368,12 @@ def main() -> int:
                     "original_index": step.get("index"),
                     "state_text": state_text,
                     "action": step.get("action"),
+                    "action_type": step.get("action_type"),
                     "legal": step.get("legal"),
                     "totals": step.get("totals"),
-                    "image_before": before_path.name,
-                    "image_after": after_path.name,
+                    "image_before": image_before_name,
+                    "image_after": image_after_name,
+                    "render_error": render_error,
                     "prompt": prompt,
                 }
             )
