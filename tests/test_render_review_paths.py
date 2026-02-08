@@ -7,6 +7,8 @@ from pathlib import Path
 
 from games_bench.games.hanoi import render as hanoi_render
 from games_bench.games.hanoi import review as hanoi_review
+from games_bench.games.sokoban import render as sokoban_render
+from games_bench.games.sokoban import review as sokoban_review
 
 
 class TestRenderReviewPathParsing(unittest.TestCase):
@@ -18,6 +20,14 @@ class TestRenderReviewPathParsing(unittest.TestCase):
         )
         self.assertEqual(
             hanoi_review._extract_run_parts(path),
+            ("unknown", "unknown", "run123"),
+        )
+        self.assertEqual(
+            sokoban_render._extract_run_parts(path),
+            ("unknown", "unknown", "run123"),
+        )
+        self.assertEqual(
+            sokoban_review._extract_run_parts(path),
             ("unknown", "unknown", "run123"),
         )
 
@@ -39,6 +49,8 @@ class TestRenderReviewPathParsing(unittest.TestCase):
             )
             self.assertEqual(hanoi_render._extract_run_parts(run_dir), expected)
             self.assertEqual(hanoi_review._extract_run_parts(run_dir), expected)
+            self.assertEqual(sokoban_render._extract_run_parts(run_dir), expected)
+            self.assertEqual(sokoban_review._extract_run_parts(run_dir), expected)
 
 
 if __name__ == "__main__":
