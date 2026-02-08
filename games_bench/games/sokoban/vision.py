@@ -3,18 +3,9 @@ from __future__ import annotations
 import base64
 import io
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 
 from .env import SokobanEnv, SokobanState
-
-
-@dataclass(frozen=True, slots=True)
-class StateImage:
-    mime_type: str
-    data_base64: str
-    data_url: str
-    width: int
-    height: int
+from ..vision_types import StateImage
 
 
 def _coerce_position(value: object, *, field_name: str) -> tuple[int, int]:
@@ -71,6 +62,11 @@ def _state_from_mapping(state: Mapping[str, object]) -> SokobanState:
     )
 
 
+def _safe_inset(tile_size: int, desired: int) -> int:
+    # Keep inner geometry non-inverted for small tiles.
+    return min(max(desired, 0), max(0, (tile_size - 1) // 2))
+
+
 def render_sokoban_image(
     state: SokobanState,
     *,
@@ -78,6 +74,9 @@ def render_sokoban_image(
     label_grid: bool = True,
     background: str = "white",
 ) -> StateImage:
+    if tile_size < 8:
+        raise ValueError("tile_size must be >= 8")
+
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as exc:  # pragma: no cover
@@ -85,9 +84,6 @@ def render_sokoban_image(
             "Missing pillow. Install with: pip install 'games-bench[viz]' "
             "or uv sync --group viz"
         ) from exc
-
-    if tile_size < 8:
-        raise ValueError("tile_size must be >= 8")
 
     board_width = state.width * tile_size
     board_height = state.height * tile_size
@@ -130,7 +126,7 @@ def render_sokoban_image(
         y0 = origin_y + row * tile_size
         x1 = x0 + tile_size - 1
         y1 = y0 + tile_size - 1
-        inset = max(4, tile_size // 4)
+        inset = _safe_inset(tile_size, max(1, tile_size // 4))
         draw.ellipse(
             (x0 + inset, y0 + inset, x1 - inset, y1 - inset),
             fill=colors["goal"],
@@ -149,7 +145,7 @@ def render_sokoban_image(
         y0 = origin_y + row * tile_size
         x1 = x0 + tile_size - 1
         y1 = y0 + tile_size - 1
-        inset = max(2, tile_size // 8)
+        inset = _safe_inset(tile_size, max(2, tile_size // 8))
         box_color = (
             colors["box_on_goal"] if (row, col) in state.goals else colors["box"]
         )
@@ -174,7 +170,7 @@ def render_sokoban_image(
     py0 = origin_y + player_row * tile_size
     px1 = px0 + tile_size - 1
     py1 = py0 + tile_size - 1
-    player_inset = max(3, tile_size // 5)
+    player_inset = _safe_inset(tile_size, max(3, tile_size // 5))
     player_color = (
         colors["player_on_goal"]
         if (player_row, player_col) in state.goals
