@@ -790,7 +790,7 @@ Deliverables:
 
 1. README updates for multi-game run/render/review workflows
 2. CLI smoke matrix for `run`, `render`, `review`
-3. Example `configs/sokoban.json` (valid prompt/tool combinations)
+3. Example config files (`configs/hanoi.json`, `configs/sokoban.json`) with valid combinations
 4. (Optional expansion track) additional approved level sets
 
 Gate:
@@ -801,7 +801,7 @@ Phase 7 implementation status:
 
 - Completed:
   - `README.md` updated for Hanoi + Sokoban workflows
-  - `configs/sokoban.json` aligned with prompt/tool compatibility rules
+  - `configs/hanoi.json` and `configs/sokoban.json` aligned with current registry-driven runs
   - CLI smoke coverage added for both games (`tests/test_cli_smoke.py`)
 - Pending (optional expansion):
   - Add more licensed Sokoban level sets beyond `starter-authored-v1`
