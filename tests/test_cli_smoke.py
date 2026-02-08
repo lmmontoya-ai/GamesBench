@@ -157,6 +157,83 @@ class TestCliSmoke(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(len(payload["run_dirs"]), 1)
 
+    def test_cli_run_config_mode_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "games": {
+                            "sokoban": {
+                                "level_ids": ["starter-authored-v1:1"],
+                                "runs_per_level": 1,
+                                "max_turns": 1,
+                                "prompt_variants": ["minimal"],
+                                "tool_variants": ["move_only"],
+                            }
+                        }
+                    }
+                )
+            )
+
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", ["games-bench"]):
+                with contextlib.redirect_stdout(stdout):
+                    rc = bench_cli.main(
+                        [
+                            "run",
+                            "--provider",
+                            "cli",
+                            "--cli-cmd",
+                            'python -c "print(\'{\\"name\\":\\"sokoban_move\\",\\"arguments\\":{\\"direction\\":\\"right\\"}}\')"',
+                            "--config",
+                            str(config_path),
+                            "--game",
+                            "sokoban",
+                            "--out-dir",
+                            tmp,
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+
+    def test_cli_run_missing_provider_errors(self) -> None:
+        with patch.object(sys, "argv", ["games-bench"]):
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    bench_cli.main(["run", "hanoi", "--n-disks", "1"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_cli_run_unknown_game_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({"games": {"hanoi": {}}}))
+
+            with patch.object(sys, "argv", ["games-bench"]):
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    with self.assertRaises(SystemExit) as ctx:
+                        bench_cli.main(
+                            [
+                                "run",
+                                "--provider",
+                                "cli",
+                                "--cli-cmd",
+                                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                                "--config",
+                                str(config_path),
+                                "--game",
+                                "unknown-game",
+                            ]
+                        )
+            self.assertEqual(ctx.exception.code, 2)
+
     def test_cli_render_smoke_for_both_games(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             hanoi_run_dir = run_hanoi_batch(
