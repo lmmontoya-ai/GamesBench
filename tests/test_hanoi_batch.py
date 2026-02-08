@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from games_bench.bench import hanoi as hanoi_bench
 
@@ -102,6 +104,52 @@ class TestHanoiBatch(unittest.TestCase):
         self.assertEqual(merged["max_turns"], 12)
         self.assertEqual(merged["runs_per_variant"], 4)
         self.assertEqual(merged["tool_variants"], ["move_only"])
+
+    def test_run_batch_supports_n_pegs_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="cli",
+                model=None,
+                config=None,
+                max_turns=2,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd='python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":3}}\')"',
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                n_pegs=["4"],
+                n_disks=["1"],
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=1,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+            )
+            run_dir = hanoi_bench.run_batch(args, config={}, game_name="hanoi")[0]
+            run_config = json.loads((Path(run_dir) / "run_config.json").read_text())
+            self.assertEqual(run_config["n_pegs"], [4])
+            self.assertEqual(run_config["start_goal_by_n_pegs"]["4"]["goal_peg"], 3)
+            episode = json.loads(
+                (Path(run_dir) / "episodes.jsonl").read_text().splitlines()[0]
+            )
+            self.assertEqual(episode["n_pegs"], 4)
+            self.assertIn("p4_n1", episode["variant_id"])
 
 
 if __name__ == "__main__":

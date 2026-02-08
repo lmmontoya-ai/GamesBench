@@ -53,11 +53,23 @@ def _normalized_steps(recording: dict[str, Any]) -> list[dict[str, Any]]:
     initial_state = meta.get("initial_state") or steps[0].get("state_before")
     if initial_state is None:
         n_disks = meta.get("n_disks")
+        n_pegs = meta.get("n_pegs")
+        start_peg = meta.get("start_peg", 0)
+        if not isinstance(n_pegs, int):
+            n_pegs = 3
+        if not isinstance(start_peg, int):
+            start_peg = 0
+        if start_peg < 0 or start_peg >= n_pegs:
+            start_peg = 0
         if isinstance(n_disks, int):
             initial_state = {
                 "n_disks": n_disks,
-                "pegs": [list(range(n_disks, 0, -1)), [], []],
-                "disk_positions": [0 for _ in range(n_disks)],
+                "n_pegs": n_pegs,
+                "pegs": [
+                    list(range(n_disks, 0, -1)) if idx == start_peg else []
+                    for idx in range(n_pegs)
+                ],
+                "disk_positions": [start_peg for _ in range(n_disks)],
             }
     if initial_state is None:
         return steps
@@ -97,6 +109,14 @@ def _render_ascii(recording: dict[str, Any]) -> str:
             if "state" in state
             else state.get("pegs")
         )
+        if pegs is None:
+            n_pegs = (
+                state.get("state", {}).get("n_pegs")
+                if "state" in state
+                else state.get("n_pegs")
+            )
+            if isinstance(n_pegs, int):
+                pegs = [[] for _ in range(n_pegs)]
         lines.append(
             f"Step {idx}: moves={totals.get('moves', 0)} "
             f"illegal={totals.get('illegal_moves', 0)} tool_calls={totals.get('tool_calls', 0)}"
@@ -163,7 +183,8 @@ def _render_html(recording: dict[str, Any]) -> str:
       const totals = step.totals || {{}};
       const stateObj = getState(step);
       const state = stateObj.state || stateObj;
-      const pegs = state.pegs || [[], [], []];
+      const nPegs = Number.isInteger(state.n_pegs) ? state.n_pegs : 3;
+      const pegs = state.pegs || Array.from({{ length: nPegs }}, () => []);
       const nDisks = state.n_disks || Math.max(...pegs.flat(), 1);
 
       meta.textContent = JSON.stringify(recording.metadata || {{}});
@@ -246,7 +267,12 @@ def _render_video(recording: dict[str, Any], out_dir: Path, fps: int) -> Path:
     for idx, step in enumerate(steps):
         state = step.get("state_after") or step.get("state_before") or {}
         state = state.get("state") or state
-        pegs = state.get("pegs", [[], [], []])
+        n_pegs = state.get("n_pegs")
+        if isinstance(n_pegs, int):
+            empty_pegs = [[] for _ in range(n_pegs)]
+        else:
+            empty_pegs = [[], [], []]
+        pegs = state.get("pegs", empty_pegs)
         n_disks = state.get("n_disks") or max([d for peg in pegs for d in peg] or [1])
 
         img = Image.new("RGB", (640, 360), "white")
@@ -260,10 +286,15 @@ def _render_video(recording: dict[str, Any], out_dir: Path, fps: int) -> Path:
             font=font,
         )
 
-        peg_x = [140, 320, 500]
+        peg_count = max(1, len(pegs))
+        peg_x = [
+            int(80 + i * (560 - 80) / max(1, peg_count - 1)) for i in range(peg_count)
+        ]
         peg_bottom = 300
         disk_h = 16
-        min_w, max_w = 40, 160
+        spacing = (560 - 80) / max(1, peg_count - 1)
+        max_w = max(36, min(160, int(spacing * 0.8)))
+        min_w = max(16, int(max_w * 0.25))
 
         for i, peg in enumerate(pegs):
             draw.line((peg_x[i], 80, peg_x[i], peg_bottom), fill="gray", width=3)

@@ -7,6 +7,11 @@ from games_bench.games.hanoi import StateImage as HanoiStateImage
 from games_bench.games.hanoi import render_hanoi_state_image
 from games_bench.games.sokoban import StateImage as SokobanStateImage
 
+try:
+    from PIL import Image as PILImage
+except ImportError:  # pragma: no cover
+    PILImage = None
+
 
 class TestHanoiVision(unittest.TestCase):
     def test_state_image_type_is_shared_across_games(self) -> None:
@@ -27,6 +32,15 @@ class TestHanoiVision(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("games-bench[viz]", msg)
         self.assertIn("uv sync --group viz", msg)
+
+    @unittest.skipUnless(PILImage is not None, "pillow required for vision rendering")
+    def test_render_supports_four_pegs(self) -> None:
+        image = render_hanoi_state_image(
+            {"n_disks": 4, "n_pegs": 4, "pegs": [[4, 3, 2, 1], [], [], []]}
+        )
+        self.assertEqual(image.mime_type, "image/png")
+        self.assertEqual(image.width, 640)
+        self.assertEqual(image.height, 360)
 
 
 if __name__ == "__main__":

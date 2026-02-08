@@ -22,6 +22,7 @@ class HanoiScene {
   private root = new THREE.Group();
   private diskMeshes = new Map<number, THREE.Mesh>();
   private pegMeshes: THREE.Mesh[] = [];
+  private baseMesh: THREE.Mesh | null = null;
 
   private pegPositions: number[] = [];
   private diskHeight = 0.4;
@@ -59,7 +60,7 @@ class HanoiScene {
   }
 
   setState(pegs: number[][], nDisks?: number) {
-    const pegCount = pegs.length;
+    const pegCount = Math.max(pegs.length, 1);
     const maxDisk = nDisks ?? Math.max(...pegs.flat(), 1);
 
     this.ensurePegs(pegCount);
@@ -94,6 +95,10 @@ class HanoiScene {
     if (this.pegMeshes.length === count) return;
     this.pegMeshes.forEach((mesh) => this.root.remove(mesh));
     this.pegMeshes = [];
+    if (this.baseMesh) {
+      this.root.remove(this.baseMesh);
+      this.baseMesh = null;
+    }
 
     const spacing = 3;
     const start = -((count - 1) * spacing) / 2;
@@ -112,7 +117,10 @@ class HanoiScene {
     const baseMat = new THREE.MeshStandardMaterial({ color: "#111827" });
     const base = new THREE.Mesh(baseGeom, baseMat);
     base.position.set(0, this.baseY, 0);
+    this.baseMesh = base;
     this.root.add(base);
+
+    this.updateCameraForPegCount(count);
   }
 
   private ensureDisks(maxDisk: number) {
@@ -132,6 +140,15 @@ class HanoiScene {
 
   render() {
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateCameraForPegCount(count: number) {
+    const clampedCount = Math.max(1, count);
+    const span = (clampedCount - 1) * 3;
+    const z = Math.max(10, span * 1.15 + 6);
+    const y = Math.max(6, 5.5 + clampedCount * 0.12);
+    this.camera.position.set(0, y, z);
+    this.camera.lookAt(0, 0.8, 0);
   }
 }
 
@@ -219,7 +236,8 @@ class HanoiPlayer {
     if (!this.recording) return;
     const step = this.recording.steps[this.stepIndex];
     const state = this.extractState(step);
-    const pegs = state.pegs ?? [[], [], []];
+    const nPegs = Number.isInteger(state.n_pegs) ? state.n_pegs : 3;
+    const pegs = state.pegs ?? Array.from({ length: nPegs }, () => []);
     this.scene.setState(pegs, state.n_disks);
 
     const totals = step.totals ?? {};
@@ -240,10 +258,19 @@ function normalizeRecording(recording: Recording): Recording {
   let initialState = (meta as any).initial_state ?? steps[0]?.state_before;
   if (!initialState && typeof (meta as any).n_disks === "number") {
     const n = (meta as any).n_disks as number;
+    const nPegs =
+      typeof (meta as any).n_pegs === "number" ? (meta as any).n_pegs : 3;
+    const startPegRaw =
+      typeof (meta as any).start_peg === "number" ? (meta as any).start_peg : 0;
+    const startPeg =
+      startPegRaw >= 0 && startPegRaw < nPegs ? startPegRaw : 0;
     initialState = {
       n_disks: n,
-      pegs: [Array.from({ length: n }, (_, i) => n - i), [], []],
-      disk_positions: Array.from({ length: n }, () => 0),
+      n_pegs: nPegs,
+      pegs: Array.from({ length: nPegs }, (_, i) =>
+        i === startPeg ? Array.from({ length: n }, (_, j) => n - j) : []
+      ),
+      disk_positions: Array.from({ length: n }, () => startPeg),
     };
   }
   if (!initialState) return recording;

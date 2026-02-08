@@ -5,6 +5,7 @@
   "out_dir": "artifacts/runs",
   "games": {
     "hanoi": {
+      "n_pegs": [3, 4],
       "n_disks": [3, 4],
       "prompt_variants": ["minimal", "full"],
       "tool_variants": ["move_only", "all_tools"],

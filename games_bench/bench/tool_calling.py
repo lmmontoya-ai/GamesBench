@@ -10,6 +10,8 @@ def _build_env_kwargs(args: argparse.Namespace) -> dict:
     env_kwargs = parse_env_kwargs(args.env_kwargs)
     if args.game == "hanoi":
         env_kwargs.setdefault("illegal_action_behavior", "penalize")
+        if args.n_pegs is not None:
+            env_kwargs["n_pegs"] = args.n_pegs
         if args.n_disks is not None:
             env_kwargs["n_disks"] = args.n_disks
     return env_kwargs
@@ -30,6 +32,12 @@ def main() -> int:
         type=int,
         default=None,
         help="Hanoi convenience flag (overrides env_kwargs.n_disks).",
+    )
+    parser.add_argument(
+        "--n-pegs",
+        type=int,
+        default=None,
+        help="Hanoi convenience flag (overrides env_kwargs.n_pegs).",
     )
     args = parser.parse_args()
 

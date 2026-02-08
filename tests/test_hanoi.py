@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from games_bench.games.hanoi.env import IllegalMoveError, TowerOfHanoiEnv
+from games_bench.games.hanoi.env import (
+    IllegalMoveError,
+    InvalidPegError,
+    TowerOfHanoiEnv,
+    tool_schemas,
+)
 
 
 class TestTowerOfHanoiEnv(unittest.TestCase):
@@ -46,6 +51,37 @@ class TestTowerOfHanoiEnv(unittest.TestCase):
         self.assertEqual(state1.pegs[1], (1,))
         self.assertFalse(done)
         self.assertEqual(reward, 0.0)
+
+    def test_variable_peg_count_is_supported(self) -> None:
+        env = TowerOfHanoiEnv(n_disks=2, n_pegs=4, goal_peg=3)
+        state = env.reset(2)
+        self.assertEqual(state.n_pegs, 4)
+        self.assertEqual(len(state.pegs), 4)
+        self.assertEqual(set(env.get_legal_moves()), {(0, 1), (0, 2), (0, 3)})
+
+        encoded = env.encode_action((0, 3))
+        state1, _reward, _done, info = env.step(encoded)
+        self.assertEqual(info["action"], (0, 3))
+        self.assertEqual(state1.pegs[3], (1,))
+
+    def test_invalid_goal_for_peg_count_raises(self) -> None:
+        with self.assertRaises(InvalidPegError):
+            TowerOfHanoiEnv(n_disks=2, n_pegs=4, goal_peg=4)
+
+    def test_optimal_steps_uses_multi_peg_reference(self) -> None:
+        self.assertEqual(TowerOfHanoiEnv(n_disks=3, n_pegs=4).optimal_steps(), 5)
+        self.assertEqual(TowerOfHanoiEnv(n_disks=4, n_pegs=4).optimal_steps(), 9)
+
+    def test_tool_schema_uses_dynamic_peg_bounds(self) -> None:
+        move_schema = next(
+            schema
+            for schema in tool_schemas(n_pegs=4)
+            if schema["name"] == "hanoi_move"
+        )
+        from_peg_schema = move_schema["parameters"]["properties"]["from_peg"]
+        to_peg_schema = move_schema["parameters"]["properties"]["to_peg"]
+        self.assertEqual(from_peg_schema["maximum"], 3)
+        self.assertEqual(to_peg_schema["maximum"], 3)
 
 
 if __name__ == "__main__":

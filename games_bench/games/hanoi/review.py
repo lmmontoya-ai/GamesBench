@@ -80,11 +80,18 @@ def _episode_id_from_path(path: Path) -> int | None:
     return int(suffix)
 
 
-def _initial_state(n_disks: int, start_peg: int = 0) -> dict[str, Any]:
-    pegs = [[] for _ in range(3)]
+def _initial_state(
+    n_disks: int, *, n_pegs: int = 3, start_peg: int = 0
+) -> dict[str, Any]:
+    if n_pegs < 3:
+        n_pegs = 3
+    if start_peg < 0 or start_peg >= n_pegs:
+        start_peg = 0
+    pegs = [[] for _ in range(n_pegs)]
     pegs[start_peg] = list(range(n_disks, 0, -1))
     return {
         "n_disks": n_disks,
+        "n_pegs": n_pegs,
         "pegs": pegs,
         "disk_positions": [start_peg for _ in range(n_disks)],
     }
@@ -282,18 +289,47 @@ def main() -> int:
         prompt_variant = prompt_variants.get(prompt_variant_name, {})
         tool_variant = tool_variants.get(tool_variant_name, {})
 
-        start_peg = run_config.get("start_peg", 0)
-        goal_peg = run_config.get("goal_peg", 2)
-        instructions = prompt_variant.get("instructions") or default_instructions(
-            start_peg=start_peg, goal_peg=goal_peg
+        n_pegs = metadata.get("n_pegs")
+        if not isinstance(n_pegs, int):
+            run_n_pegs = run_config.get("n_pegs")
+            if isinstance(run_n_pegs, list) and run_n_pegs:
+                n_pegs = int(run_n_pegs[0])
+            elif isinstance(run_n_pegs, int):
+                n_pegs = run_n_pegs
+            else:
+                n_pegs = 3
+
+        start_goal_map = run_config.get("start_goal_by_n_pegs", {})
+        start_goal_for_n = (
+            start_goal_map.get(str(n_pegs), {})
+            if isinstance(start_goal_map, dict)
+            else {}
         )
-        instructions = format_instructions(
-            instructions, start_peg=start_peg, goal_peg=goal_peg
+        start_peg = metadata.get(
+            "start_peg",
+            start_goal_for_n.get("start_peg", run_config.get("start_peg", 0)),
+        )
+        goal_peg = metadata.get(
+            "goal_peg",
+            start_goal_for_n.get("goal_peg", run_config.get("goal_peg")),
+        )
+        instruction_template = prompt_variant.get(
+            "instructions"
+        ) or default_instructions(
+            n_pegs=n_pegs,
+            start_peg=int(start_peg),
+            goal_peg=(None if goal_peg is None else int(goal_peg)),
         )
         if state_format in {"image", "both"}:
-            instructions = with_image_instructions(instructions)
+            instruction_template = with_image_instructions(instruction_template)
+        instructions = format_instructions(
+            instruction_template,
+            n_pegs=n_pegs,
+            start_peg=int(start_peg),
+            goal_peg=(None if goal_peg is None else int(goal_peg)),
+        )
         allowed_tools = tool_variant.get("allowed_tools")
-        schemas = tool_schemas()
+        schemas = tool_schemas(n_pegs=n_pegs)
         if allowed_tools:
             allowed_set = set(allowed_tools)
             schemas = [t for t in schemas if t["name"] in allowed_set]
@@ -308,7 +344,11 @@ def main() -> int:
             initial_snapshot = None
         if steps and isinstance(steps[0].get("state_before"), dict):
             initial_snapshot = initial_snapshot or steps[0].get("state_before")
-        current_state = initial_snapshot or _initial_state(n_disks)
+        current_state = initial_snapshot or _initial_state(
+            n_disks,
+            n_pegs=n_pegs,
+            start_peg=int(start_peg),
+        )
 
         rendered_steps = []
         for idx, step in enumerate(steps):
