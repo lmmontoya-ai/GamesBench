@@ -124,6 +124,7 @@ def default_sokoban_config() -> dict[str, Any]:
         "record_provider_raw": False,
         "provider_retries": 2,
         "provider_backoff": 1.0,
+        "stream_debug": False,
         "procgen_grid_sizes": None,
         "procgen_box_counts": None,
         "procgen_levels_per_combo": 1,
@@ -150,6 +151,7 @@ def _build_provider(
     *,
     provider_retries: int | None = None,
     provider_backoff: float | None = None,
+    stream_debug: bool | None = None,
 ) -> Any:
     retries = provider_retries
     if retries is None:
@@ -163,12 +165,17 @@ def _build_provider(
     if backoff is None:
         backoff = 1.0
 
+    debug = stream_debug
+    if debug is None:
+        debug = getattr(args, "stream_debug", False)
+
     if args.provider == "openrouter":
         model = model or _require_env("OPENROUTER_MODEL")
         return OpenRouterProvider(
             model=model,
             max_retries=int(retries),
             retry_backoff_s=float(backoff),
+            stream_debug=bool(debug),
         )
     if args.provider == "openai":
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
@@ -809,6 +816,12 @@ def run_batch(
         if provider_backoff_arg is not None
         else float(config.get("provider_backoff", 1.0))
     )
+    stream_debug_arg = getattr(args, "stream_debug", None)
+    stream_debug = (
+        bool(stream_debug_arg)
+        if stream_debug_arg is not None
+        else bool(config.get("stream_debug", False))
+    )
 
     prompt_variants = DEFAULT_PROMPT_VARIANTS
     selected_prompt_names = getattr(args, "prompt_variants", None) or config.get(
@@ -932,6 +945,7 @@ def run_batch(
             model_name,
             provider_retries=provider_retries,
             provider_backoff=provider_backoff,
+            stream_debug=stream_debug,
         )
         if state_format in {"image", "both"} and not getattr(
             provider, "supports_images", False
@@ -996,6 +1010,7 @@ def run_batch(
             "record_provider_raw": record_provider_raw,
             "provider_retries": provider_retries,
             "provider_backoff": provider_backoff,
+            "stream_debug": stream_debug,
             "python": platform.python_version(),
             "platform": platform.platform(),
         }

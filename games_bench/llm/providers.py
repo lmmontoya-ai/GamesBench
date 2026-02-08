@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import shlex
 import subprocess
 import time
@@ -180,6 +181,7 @@ class OpenRouterProvider:
         max_tokens: int | None = None,
         max_retries: int = 2,
         retry_backoff_s: float = 1.0,
+        stream_debug: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -191,6 +193,173 @@ class OpenRouterProvider:
         self.max_tokens = max_tokens
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff_s = float(retry_backoff_s)
+        self.stream_debug = bool(stream_debug)
+
+    def _stream_log(self, message: str) -> None:
+        if not self.stream_debug:
+            return
+        print(f"[openrouter stream-debug] {message}", file=sys.stderr, flush=True)
+
+    def _completion_payload(
+        self, client: Any, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not self.stream_debug:
+            response = client.chat.completions.create(**kwargs)
+            if hasattr(response, "model_dump"):
+                return response.model_dump()
+            if isinstance(response, dict):
+                return response
+            return {}
+        return self._stream_completion_payload(client, kwargs)
+
+    def _stream_completion_payload(
+        self, client: Any, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        stream_kwargs = dict(kwargs)
+        stream_kwargs["stream"] = True
+        stream_kwargs["stream_options"] = {"include_usage": True}
+
+        try:
+            stream = client.chat.completions.create(**stream_kwargs)
+        except Exception:
+            stream_kwargs.pop("stream_options", None)
+            stream = client.chat.completions.create(**stream_kwargs)
+
+        started = time.monotonic()
+        last_tick = started
+        chunk_count = 0
+        usage: dict[str, Any] | None = None
+        finish_reason: str | None = None
+        content_parts: list[str] = []
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        choice_error: dict[str, Any] | None = None
+
+        for chunk in stream:
+            chunk_count += 1
+            now = time.monotonic()
+            elapsed_s = now - started
+            delta_s = now - last_tick
+            last_tick = now
+
+            payload = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
+            if not isinstance(payload, dict):
+                self._stream_log(
+                    f"+{elapsed_s:.2f}s dt={delta_s:.2f}s chunk={chunk_count:03d} non-dict payload"
+                )
+                continue
+
+            usage_chunk = _normalize_usage(payload.get("usage"))
+            if usage_chunk:
+                usage = usage_chunk
+
+            choices = payload.get("choices") or []
+            if not choices:
+                self._stream_log(
+                    f"+{elapsed_s:.2f}s dt={delta_s:.2f}s chunk={chunk_count:03d} no choices"
+                )
+                continue
+
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                self._stream_log(
+                    f"+{elapsed_s:.2f}s dt={delta_s:.2f}s chunk={chunk_count:03d} non-dict choice"
+                )
+                continue
+            if isinstance(choice.get("error"), dict):
+                choice_error = choice["error"]
+
+            delta = choice.get("delta") or {}
+            if choice.get("finish_reason"):
+                finish_reason = choice.get("finish_reason")
+
+            parts: list[str] = []
+            content_piece = delta.get("content")
+            if isinstance(content_piece, str) and content_piece:
+                content_parts.append(content_piece)
+                parts.append(f"content+={len(content_piece)}")
+
+            tool_call_deltas = delta.get("tool_calls") or []
+            if isinstance(tool_call_deltas, list):
+                for tool_call_delta in tool_call_deltas:
+                    if not isinstance(tool_call_delta, dict):
+                        continue
+                    raw_index = tool_call_delta.get("index", 0)
+                    try:
+                        index = int(raw_index)
+                    except (TypeError, ValueError):
+                        index = 0
+                    entry = tool_calls_by_index.setdefault(
+                        index,
+                        {
+                            "type": "function",
+                            "id": None,
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    tool_id = tool_call_delta.get("id")
+                    if isinstance(tool_id, str) and tool_id:
+                        entry["id"] = tool_id
+
+                    function_delta = tool_call_delta.get("function") or {}
+                    if isinstance(function_delta, dict):
+                        name = function_delta.get("name")
+                        if isinstance(name, str) and name:
+                            entry["function"]["name"] = name
+                        arguments_chunk = function_delta.get("arguments")
+                        if isinstance(arguments_chunk, str) and arguments_chunk:
+                            entry["function"]["arguments"] += arguments_chunk
+                            parts.append(
+                                f"tool[{index}]={entry['function']['name'] or '?'} args+={len(arguments_chunk)}"
+                            )
+                        elif isinstance(name, str) and name:
+                            parts.append(f"tool[{index}]={name}")
+
+            if not parts:
+                parts.append("delta metadata only")
+            self._stream_log(
+                f"+{elapsed_s:.2f}s dt={delta_s:.2f}s chunk={chunk_count:03d} {'; '.join(parts)}"
+            )
+
+        tool_calls: list[dict[str, Any]] = []
+        for index in sorted(tool_calls_by_index):
+            entry = tool_calls_by_index[index]
+            function_data = entry.get("function") or {}
+            tool_call: dict[str, Any] = {
+                "type": "function",
+                "function": {
+                    "name": function_data.get("name", ""),
+                    "arguments": function_data.get("arguments", ""),
+                },
+            }
+            tool_id = entry.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                tool_call["id"] = tool_id
+            tool_calls.append(tool_call)
+
+        message: dict[str, Any] = {}
+        if content_parts:
+            message["content"] = "".join(content_parts)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        data: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ]
+        }
+        if usage:
+            data["usage"] = usage
+        if choice_error is not None:
+            data["choices"][0]["error"] = choice_error
+
+        total_elapsed = time.monotonic() - started
+        self._stream_log(
+            f"done in {total_elapsed:.2f}s; chunks={chunk_count}; tool_calls={len(tool_calls)}"
+        )
+        return data
 
     def next_tool_calls(
         self,
@@ -255,23 +424,18 @@ class OpenRouterProvider:
             kwargs["max_tokens"] = self.max_tokens
 
         attempt = 0
-        data: dict[str, Any] | Any
+        data: dict[str, Any]
         while True:
             try:
-                response = client.chat.completions.create(**kwargs)
-                data = (
-                    response.model_dump()
-                    if hasattr(response, "model_dump")
-                    else response
-                )
+                data = self._completion_payload(client, kwargs)
                 break
             except Exception as exc:  # pragma: no cover
                 attempt += 1
                 if attempt > self.max_retries:
                     return ProviderResult([], raw=None, error=f"Provider error: {exc}")
                 time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
-        usage = _normalize_usage(data.get("usage")) if isinstance(data, dict) else None
-        cost = _extract_cost(usage, data if isinstance(data, dict) else None)
+        usage = _normalize_usage(data.get("usage"))
+        cost = _extract_cost(usage, data)
         choices = data.get("choices", [])
         if not choices:
             return ProviderResult(
@@ -288,20 +452,9 @@ class OpenRouterProvider:
                 for attempt in range(1, self.max_retries + 1):
                     time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
                     try:
-                        response = client.chat.completions.create(**kwargs)
-                        data = (
-                            response.model_dump()
-                            if hasattr(response, "model_dump")
-                            else response
-                        )
-                        usage = (
-                            _normalize_usage(data.get("usage"))
-                            if isinstance(data, dict)
-                            else None
-                        )
-                        cost = _extract_cost(
-                            usage, data if isinstance(data, dict) else None
-                        )
+                        data = self._completion_payload(client, kwargs)
+                        usage = _normalize_usage(data.get("usage"))
+                        cost = _extract_cost(usage, data)
                         choices = data.get("choices", [])
                         if not choices:
                             return ProviderResult(
