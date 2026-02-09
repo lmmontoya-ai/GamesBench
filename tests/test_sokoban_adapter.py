@@ -302,17 +302,19 @@ class TestSokobanGameAdapter(unittest.TestCase):
     def test_harness_stops_immediately_on_terminal_deadlock_move(self) -> None:
         level = _level_from_xsb(
             """#####
-#@$ #
-#  .#
+#   #
+# $ #
+# @.#
 #####
 """
         )
         env = SokobanEnv(level, detect_deadlocks=True, terminal_on_deadlock=True)
+        self.assertFalse(env.is_deadlocked())
         adapter = SokobanGameAdapter(env)
         provider = _ScriptedProvider(
             [
                 ProviderResult(
-                    tool_calls=[ToolCall("sokoban_move", {"direction": "right"})],
+                    tool_calls=[ToolCall("sokoban_move", {"direction": "up"})],
                     raw={},
                 ),
                 ProviderResult(
@@ -341,13 +343,7 @@ class TestSokobanGameAdapter(unittest.TestCase):
         provider = _ScriptedProvider(
             [ProviderResult(tool_calls=[ToolCall("sokoban_get_state", {})], raw={})]
         )
-        result = run_tool_calling_episode(
-            adapter,
-            provider,
-            max_turns=5,
-            deadlock_checker=lambda a: bool(a.env.is_deadlocked()),
-            deadlock_terminate_on_check=True,
-        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=5)
         self.assertFalse(result.solved)
         self.assertTrue(result.terminated_early)
         self.assertEqual(result.termination_reason, "deadlock_terminal")

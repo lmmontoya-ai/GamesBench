@@ -63,6 +63,29 @@ def _snapshot_key(snapshot: Any) -> str:
     return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _infer_deadlock_checker(
+    adapter: GameAdapter,
+) -> Callable[[GameAdapter], bool] | None:
+    env = getattr(adapter, "env", None)
+    if env is None:
+        return None
+    if not bool(getattr(env, "detect_deadlocks", False)):
+        return None
+    checker = getattr(env, "is_deadlocked", None)
+    if not callable(checker):
+        return None
+    return lambda _adapter, _checker=checker: bool(_checker())
+
+
+def _infer_deadlock_terminate_on_check(adapter: GameAdapter) -> bool:
+    env = getattr(adapter, "env", None)
+    if env is None:
+        return False
+    return bool(getattr(env, "detect_deadlocks", False)) and bool(
+        getattr(env, "terminal_on_deadlock", False)
+    )
+
+
 def run_tool_calling_episode(
     adapter: GameAdapter,
     provider: Any,
@@ -76,7 +99,7 @@ def run_tool_calling_episode(
     stagnation_patience: int | None = None,
     deadlock_patience: int | None = None,
     deadlock_checker: Callable[[GameAdapter], bool] | None = None,
-    deadlock_terminate_on_check: bool = False,
+    deadlock_terminate_on_check: bool | None = None,
 ) -> EpisodeResult:
     tools = adapter.tool_schemas()
     if allowed_tools is not None:
@@ -95,6 +118,12 @@ def run_tool_calling_episode(
         raise ValueError("stagnation_patience must be >= 1 when provided.")
     if deadlock_patience is not None and int(deadlock_patience) < 1:
         raise ValueError("deadlock_patience must be >= 1 when provided.")
+    deadlock_checker = deadlock_checker or _infer_deadlock_checker(adapter)
+    terminate_on_deadlock_check = (
+        bool(deadlock_terminate_on_check)
+        if deadlock_terminate_on_check is not None
+        else _infer_deadlock_terminate_on_check(adapter)
+    )
 
     illegal_moves = 0
     tool_calls = 0
@@ -144,7 +173,7 @@ def run_tool_calling_episode(
                 "height": state_image.get("height"),
             }
             events.append({"type": "state_image", "meta": meta})
-        if deadlock_terminate_on_check and is_deadlocked:
+        if terminate_on_deadlock_check and is_deadlocked:
             terminated_early = True
             termination_reason = "deadlock_terminal"
             events.append(
