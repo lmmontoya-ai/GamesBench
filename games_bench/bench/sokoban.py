@@ -1101,6 +1101,7 @@ def _run_sokoban_episode_job(
         stagnation_patience=stagnation_patience,
         deadlock_patience=deadlock_patience,
         deadlock_checker=deadlock_checker,
+        deadlock_terminate_on_check=job.effective_terminal_on_deadlock,
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)

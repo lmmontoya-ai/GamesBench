@@ -76,6 +76,7 @@ def run_tool_calling_episode(
     stagnation_patience: int | None = None,
     deadlock_patience: int | None = None,
     deadlock_checker: Callable[[GameAdapter], bool] | None = None,
+    deadlock_terminate_on_check: bool = False,
 ) -> EpisodeResult:
     tools = adapter.tool_schemas()
     if allowed_tools is not None:
@@ -143,6 +144,18 @@ def run_tool_calling_episode(
                 "height": state_image.get("height"),
             }
             events.append({"type": "state_image", "meta": meta})
+        if deadlock_terminate_on_check and is_deadlocked:
+            terminated_early = True
+            termination_reason = "deadlock_terminal"
+            events.append(
+                {
+                    "type": "early_stop",
+                    "reason": termination_reason,
+                    "stagnation_turns": stagnation_turns,
+                    "deadlock_turns": deadlock_turns,
+                }
+            )
+            break
         if stagnation_patience is not None and stagnation_turns >= int(
             stagnation_patience
         ):

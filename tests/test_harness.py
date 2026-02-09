@@ -70,6 +70,7 @@ class MockProvider:
 
     def __init__(self, results: list[ProviderResult]) -> None:
         self._results = list(results)
+        self.calls = 0
 
     def next_tool_calls(
         self,
@@ -80,6 +81,7 @@ class MockProvider:
         state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
         del state_text, tool_schemas, instructions, state_image
+        self.calls += 1
         if self._results:
             return self._results.pop(0)
         return ProviderResult(tool_calls=[], raw=None, error="No scripted response")
@@ -232,6 +234,24 @@ class TestHarness(unittest.TestCase):
         self.assertTrue(
             any(event.get("type") == "early_stop" for event in result.events)
         )
+
+    def test_stops_immediately_on_terminal_deadlock_check(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=5,
+            deadlock_checker=lambda _adapter: True,
+            deadlock_terminate_on_check=True,
+        )
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock_terminal")
+        self.assertEqual(result.tool_calls, 0)
+        self.assertEqual(provider.calls, 0)
 
 
 if __name__ == "__main__":
