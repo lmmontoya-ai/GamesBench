@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
 
@@ -71,6 +72,7 @@ class MockProvider:
     def __init__(self, results: list[ProviderResult]) -> None:
         self._results = list(results)
         self.calls = 0
+        self.conversations: list[list[dict[str, Any]] | None] = []
 
     def next_tool_calls(
         self,
@@ -79,9 +81,14 @@ class MockProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
         del state_text, tool_schemas, instructions, state_image
         self.calls += 1
+        if conversation is None:
+            self.conversations.append(None)
+        else:
+            self.conversations.append(json.loads(json.dumps(conversation)))
         if self._results:
             return self._results.pop(0)
         return ProviderResult(tool_calls=[], raw=None, error="No scripted response")
@@ -99,6 +106,39 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(result.tool_calls, 1)
         self.assertEqual(result.illegal_moves, 0)
         self.assertEqual(adapter.executed, ["dummy_move"])
+
+    def test_stateful_is_default_and_includes_history(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={}),
+                ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={}),
+            ]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=3)
+        self.assertTrue(result.solved)
+        self.assertEqual(provider.calls, 2)
+        self.assertIsNotNone(provider.conversations[0])
+        self.assertEqual(provider.conversations[0][0]["role"], "system")
+        self.assertEqual(provider.conversations[0][1]["role"], "user")
+        self.assertGreater(
+            len(provider.conversations[1]), len(provider.conversations[0])
+        )
+
+    def test_stateless_mode_omits_conversation_history(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={}),
+                ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={}),
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter, provider, max_turns=3, stateless=True
+        )
+        self.assertTrue(result.solved)
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(provider.conversations, [None, None])
 
     def test_rejects_disallowed_tool(self) -> None:
         adapter = DummyAdapter()

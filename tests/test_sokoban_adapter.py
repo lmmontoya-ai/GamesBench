@@ -33,8 +33,9 @@ class _ScriptedProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
-        del state_text, tool_schemas, instructions, state_image
+        del state_text, tool_schemas, instructions, state_image, conversation
         self.calls += 1
         if self._results:
             return self._results.pop(0)

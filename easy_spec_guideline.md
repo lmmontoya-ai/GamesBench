@@ -15,9 +15,10 @@ This guideline defines how to add or update the `easy` benchmark family (for exa
 ## Global config expectations
 
 - Include global runtime and logging keys:
-  - `out_dir`, `record`, `record_raw`, `record_provider_raw`
+  - `spec`, `out_dir`, `record`, `record_raw`, `record_provider_raw`
   - `provider_retries`, `provider_backoff`, `stream_debug`
   - `parallelism`, `max_inflight_provider`
+  - Optional `stateless` (default is stateful when omitted)
 - Prefer lower run cost than `standard`:
   - Lower concurrency defaults and smaller run counts are acceptable.
 
@@ -55,3 +56,5 @@ When adding a new game to `easy`:
 
 - Do not mutate old suite versions.
 - For any difficulty, seed, or variant changes, publish a new version (for example `easy-v2`).
+- Keep `spec` stable for a version (`easy-v1`), and rely on runtime suffixing to report
+  `easy-v1-stateful` vs `easy-v1-stateless`.

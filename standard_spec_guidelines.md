@@ -15,9 +15,10 @@ This guideline defines how to add or update the `standard` benchmark family (for
 ## Global config expectations
 
 - Include global runtime and logging keys:
-  - `out_dir`, `record`, `record_raw`, `record_provider_raw`
+  - `spec`, `out_dir`, `record`, `record_raw`, `record_provider_raw`
   - `provider_retries`, `provider_backoff`, `stream_debug`
   - `parallelism`, `max_inflight_provider`
+  - Optional `stateless` (default is stateful when omitted)
 - Defaults should support stable benchmark throughput, not minimum cost.
 
 ## Per-game design rules
@@ -56,3 +57,5 @@ When adding a new game to `standard`:
 
 - Treat released `standard-v*` suites as immutable.
 - Introduce `standard-v{n+1}` for any ladder, seed, or variant changes.
+- Keep `spec` stable for a version (`standard-v1`), and rely on runtime suffixing to
+  report `standard-v1-stateful` vs `standard-v1-stateless`.

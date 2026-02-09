@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 
 PROVIDER_CHOICES = ["openrouter", "openai", "codex", "cli"]
@@ -21,6 +22,14 @@ def add_common_batch_arguments(
         "--config", help="Path to JSON config (models + optional defaults)."
     )
     parser.add_argument("--max-turns", type=int, default=None)
+    parser.add_argument(
+        "--stateless",
+        action="store_true",
+        help=(
+            "Disable conversation history across turns. "
+            "By default runs are stateful and include prior turn context."
+        ),
+    )
     parser.add_argument(
         "--parallelism",
         type=int,
@@ -133,3 +142,35 @@ def add_common_batch_arguments(
             default=None,
             help="Game(s) to run (default: all in config).",
         )
+
+
+def resolve_interaction_mode(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[bool, str]:
+    stateless = bool(getattr(args, "stateless", False)) or bool(
+        config.get("stateless", False)
+    )
+    interaction_mode = "stateless" if stateless else "stateful"
+    return stateless, interaction_mode
+
+
+def resolve_spec_name(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    *,
+    interaction_mode: str,
+) -> tuple[str, str]:
+    raw_base = (
+        getattr(args, "suite", None)
+        or config.get("spec")
+        or config.get("suite")
+        or "custom"
+    )
+    spec_base = str(raw_base).strip() or "custom"
+    for suffix in ("-stateful", "-stateless"):
+        if spec_base.endswith(suffix):
+            trimmed = spec_base[: -len(suffix)].strip("-_ ")
+            spec_base = trimmed or "custom"
+            break
+    return spec_base, f"{spec_base}-{interaction_mode}"

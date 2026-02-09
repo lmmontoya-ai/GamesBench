@@ -55,6 +55,7 @@ Run canonical benchmark suite:
 - List suites: `uv run games-bench run --list-suites`
 - Run easy suite (small-model-friendly): `uv run games-bench run --provider openrouter --model google/gemini-2.5-flash --suite easy-v1`
 - Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
+- Run stateless variant of a suite: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --stateless`
 - Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
 - Override throughput on the CLI: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --parallelism 4 --max-inflight-provider 4`
 
@@ -102,6 +103,7 @@ Notes:
   - `--parallelism` controls concurrent episode workers.
   - `--max-inflight-provider` caps provider requests in-flight across workers.
   - `--stagnation-patience` early-stops episodes after repeated no-change turns.
+  - `--stateless` disables turn-history context (default is stateful).
 
 ## Config Model
 
@@ -111,7 +113,7 @@ Batch config precedence:
 
 `config.json` supports:
 
-- Global keys: `models`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
+- Global keys: `models`, `spec`, `stateless`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
 - Per-game keys under `"games"`:
   - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`, `optimal_turn_cap_multiplier`
   - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
@@ -152,6 +154,11 @@ Each run contains:
 - `summary.json`
 - `recordings/episode_XXXX.json` when `--record` is enabled
 - `raw_generations.jsonl` when `--record-raw` is enabled
+
+`run_config.json` and `summary.json` include:
+
+- `spec`: `<spec>-stateful` or `<spec>-stateless`
+- `interaction_mode`: `stateful` or `stateless`
 
 ## Render And Review
 

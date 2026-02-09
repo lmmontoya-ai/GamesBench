@@ -86,6 +86,31 @@ def _infer_deadlock_terminate_on_check(adapter: GameAdapter) -> bool:
     )
 
 
+def _state_message_content(
+    *,
+    state_text: str,
+    state_image: dict[str, Any] | None,
+) -> str | list[dict[str, Any]]:
+    if not state_image:
+        return state_text
+    parts: list[dict[str, Any]] = []
+    if state_text:
+        parts.append({"type": "text", "text": state_text})
+    data_url = state_image.get("data_url")
+    if not data_url:
+        mime = state_image.get("mime_type", "image/png")
+        data = state_image.get("data_base64")
+        if data:
+            data_url = f"data:{mime};base64,{data}"
+    if data_url:
+        parts.append({"type": "image_url", "image_url": {"url": data_url}})
+    return parts or state_text
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def run_tool_calling_episode(
     adapter: GameAdapter,
     provider: Any,
@@ -100,6 +125,7 @@ def run_tool_calling_episode(
     deadlock_patience: int | None = None,
     deadlock_checker: Callable[[GameAdapter], bool] | None = None,
     deadlock_terminate_on_check: bool | None = None,
+    stateless: bool = False,
 ) -> EpisodeResult:
     tools = adapter.tool_schemas()
     if allowed_tools is not None:
@@ -136,6 +162,9 @@ def run_tool_calling_episode(
     deadlock_turns = 0
     terminated_early = False
     termination_reason: str | None = None
+    conversation: list[dict[str, Any]] | None = None
+    if not stateless:
+        conversation = [{"role": "system", "content": instructions}]
 
     for _ in range(max_turns):
         if adapter.is_solved():
@@ -212,11 +241,22 @@ def run_tool_calling_episode(
             )
             break
 
+        if conversation is not None:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": _state_message_content(
+                        state_text=state_text,
+                        state_image=state_image,
+                    ),
+                }
+            )
         result: ProviderResult = provider.next_tool_calls(
             state_text=state_text,
             tool_schemas=tools,
             instructions=instructions,
             state_image=state_image,
+            conversation=list(conversation) if conversation is not None else None,
         )
         if result.usage:
             _accumulate_usage(usage_totals, result.usage)
@@ -233,11 +273,24 @@ def run_tool_calling_episode(
             provider_event["raw"] = result.raw
         events.append(provider_event)
 
+        if conversation is not None and result.error:
+            conversation.append(
+                {"role": "assistant", "content": _compact_json({"error": result.error})}
+            )
         if result.error or not result.tool_calls:
             break
 
         # Only execute the first tool call per turn for consistency.
         call = result.tool_calls[0]
+        if conversation is not None:
+            conversation.append(
+                {
+                    "role": "assistant",
+                    "content": _compact_json(
+                        {"tool_call": {"name": call.name, "arguments": call.arguments}}
+                    ),
+                }
+            )
         tool_calls += 1
         if allowed_set is not None and call.name not in allowed_set:
             tool_result = {"ok": False, "error": f"tool not allowed: {call.name}"}
@@ -261,6 +314,15 @@ def run_tool_calling_episode(
             {"type": "tool_call", "name": call.name, "arguments": call.arguments}
         )
         events.append({"type": "tool_result", "result": tool_result, "meta": tool_meta})
+        if conversation is not None:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": _compact_json(
+                        {"tool_result": tool_result, "tool_meta": tool_meta}
+                    ),
+                }
+            )
         if bool(tool_meta.get("terminate_episode")):
             terminated_early = True
             termination_reason = str(
