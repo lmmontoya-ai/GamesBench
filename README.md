@@ -20,6 +20,11 @@ Equivalent `pip` installs:
 - Viz: `pip install 'games-bench[viz]'`
 - All optional: `pip install 'games-bench[llm,viz]'`
 
+CLI invocation:
+
+- Preferred: `uv run games-bench ...`
+- Fallback (always works in-repo): `uv run python -m games_bench.bench ...`
+
 ## Repo Layout
 
 - `games_bench/games/` game engine (envs/adapters/prompts/vision/render/review), no benchmark deps
@@ -51,6 +56,47 @@ Run canonical benchmark suite:
 - Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
 - Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
 
+## OpenRouter Benchmark Workflows
+
+Set your API key:
+
+- `export OPENROUTER_API_KEY="..."`
+
+Run one model on the canonical suite:
+
+- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
+
+Run one model on a single game:
+
+- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --game hanoi`
+- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --game sokoban`
+
+Run a model list (recommended for benchmark studies):
+
+1. Create a config overlay with models:
+
+```json
+{
+  "models": {
+    "openrouter": [
+      "google/gemini-2.5-pro-preview",
+      "openai/gpt-4.1",
+      "anthropic/claude-3.7-sonnet"
+    ]
+  }
+}
+```
+
+2. Run with suite + overlay:
+
+- `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/models_openrouter.example.json`
+
+Notes:
+
+- `models.openrouter` can be either a string (single model) or a list.
+- `--config` values override suite defaults where keys overlap.
+- You can combine `--game` with model lists to benchmark only one game.
+
 ## Config Model
 
 Batch config precedence:
@@ -80,6 +126,7 @@ See examples:
 - `configs/sokoban.json`
 - `configs/sokoban_procgen.json`
 - `configs/standard_v1.json`
+- `configs/models_openrouter.example.json`
 
 ## Outputs
 
