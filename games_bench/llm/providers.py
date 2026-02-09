@@ -7,6 +7,8 @@ import shlex
 import subprocess
 import time
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -182,6 +184,7 @@ class OpenRouterProvider:
         max_retries: int = 2,
         retry_backoff_s: float = 1.0,
         stream_debug: bool = False,
+        timeout_s: int = 300,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -194,6 +197,7 @@ class OpenRouterProvider:
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff_s = float(retry_backoff_s)
         self.stream_debug = bool(stream_debug)
+        self.timeout_s = int(timeout_s)
 
     def _stream_log(self, message: str) -> None:
         if not self.stream_debug:
@@ -204,13 +208,40 @@ class OpenRouterProvider:
         self, client: Any, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         if not self.stream_debug:
-            response = client.chat.completions.create(**kwargs)
-            if hasattr(response, "model_dump"):
-                return response.model_dump()
-            if isinstance(response, dict):
-                return response
-            return {}
-        return self._stream_completion_payload(client, kwargs)
+            return self._rest_completion_payload(kwargs)
+        call_kwargs = dict(kwargs)
+        call_kwargs.setdefault("timeout", float(self.timeout_s))
+        return self._stream_completion_payload(client, call_kwargs)
+
+    def _rest_completion_payload(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            method="POST",
+            data=json.dumps(kwargs).encode("utf-8"),
+            headers=self._rest_headers(),
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=float(self.timeout_s)) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Request failed: {exc}") from exc
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("Provider error: non-dict JSON payload from OpenRouter")
+
+    def _rest_headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.http_referer:
+            headers["HTTP-Referer"] = self.http_referer
+        if self.x_title:
+            headers["X-Title"] = self.x_title
+        return headers
 
     def _stream_completion_payload(
         self, client: Any, kwargs: dict[str, Any]
@@ -388,6 +419,7 @@ class OpenRouterProvider:
             api_key=self.api_key,
             base_url="https://openrouter.ai/api/v1",
             default_headers=headers or None,
+            timeout=self.timeout_s,
         )
 
         tools = _tool_schemas_to_openai_chat(tool_schemas)

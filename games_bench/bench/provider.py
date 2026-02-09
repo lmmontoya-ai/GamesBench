@@ -31,6 +31,7 @@ def _build_provider(args: argparse.Namespace) -> Any:
             max_retries=2,
             retry_backoff_s=1.0,
             stream_debug=bool(args.stream_debug),
+            timeout_s=int(args.timeout_s),
         )
     if args.provider == "openai":
         model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")

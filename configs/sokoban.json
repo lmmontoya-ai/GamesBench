@@ -3,6 +3,8 @@
     "openrouter": ["openai/gpt-4.1-mini"]
   },
   "out_dir": "artifacts/runs",
+  "parallelism": 2,
+  "max_inflight_provider": 2,
   "games": {
     "sokoban": {
       "level_ids": ["starter-authored-v1:1", "starter-authored-v1:2"],
@@ -10,6 +12,8 @@
       "tool_variants": ["move_and_query", "all_tools"],
       "runs_per_level": 2,
       "max_turns": 300,
+      "stagnation_patience": 80,
+      "deadlock_patience": 8,
       "detect_deadlocks": true,
       "terminal_on_deadlock": true
     }

@@ -158,6 +158,51 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(result.tool_calls, 1)
         self.assertEqual(result.illegal_moves, 0)
 
+    def test_stops_early_on_stagnation(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})
+                for _ in range(8)
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=10,
+            stagnation_patience=2,
+        )
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "stagnation:2")
+        self.assertEqual(result.tool_calls, 2)
+        self.assertTrue(
+            any(event.get("type") == "early_stop" for event in result.events)
+        )
+
+    def test_stops_early_on_deadlock_patience(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})
+                for _ in range(8)
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=10,
+            deadlock_patience=2,
+            deadlock_checker=lambda _adapter: True,
+        )
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock:2")
+        self.assertEqual(result.tool_calls, 1)
+        self.assertTrue(
+            any(event.get("type") == "early_stop" for event in result.events)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

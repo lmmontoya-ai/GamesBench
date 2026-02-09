@@ -6,6 +6,8 @@
   "provider_retries": 2,
   "provider_backoff": 1.0,
   "stream_debug": false,
+  "parallelism": 4,
+  "max_inflight_provider": 4,
   "games": {
     "hanoi": {
       "cases": [
@@ -21,6 +23,8 @@
       ],
       "runs_per_variant": 5,
       "max_turns": 400,
+      "stagnation_patience": 40,
+      "optimal_turn_cap_multiplier": 4.0,
       "prompt_variants": ["full"],
       "tool_variants": ["move_only"],
       "state_format": "text"
@@ -37,6 +41,8 @@
       "max_levels": null,
       "runs_per_level": 3,
       "max_turns": 400,
+      "stagnation_patience": 80,
+      "deadlock_patience": 8,
       "prompt_variants": ["full"],
       "tool_variants": ["move_and_query"],
       "state_format": "text",

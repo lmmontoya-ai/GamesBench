@@ -134,6 +134,22 @@ class TestSokobanBatch(unittest.TestCase):
             }
             self.assertTrue(required_fields.issubset(first_episode.keys()))
 
+    def test_parallel_execution_preserves_episode_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            args.runs_per_level = 2
+            args.parallelism = 2
+            args.max_inflight_provider = 1
+            run_dir = sokoban_bench.run_batch(args, config={}, game_name="sokoban")[0]
+            run_config = json.loads((Path(run_dir) / "run_config.json").read_text())
+            self.assertEqual(run_config["parallelism"], 2)
+            self.assertEqual(run_config["max_inflight_provider"], 1)
+            episode_ids = [
+                json.loads(line)["episode_id"]
+                for line in (Path(run_dir) / "episodes.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(episode_ids, [0, 1])
+
     def test_prompt_tool_incompatibility_raises(self) -> None:
         args = _base_args(out_dir="artifacts/test_runs", state_format="text")
         args.prompt_variants = ["full"]
@@ -175,11 +191,17 @@ class TestSokobanBatch(unittest.TestCase):
             with patch(
                 "games_bench.bench.sokoban.run_tool_calling_episode", fake_episode
             ):
-                sokoban_bench.run_batch(
+                run_dirs = sokoban_bench.run_batch(
                     args,
                     config={"terminal_on_deadlock": False},
                     game_name="sokoban",
                 )
+            first_episode = json.loads(
+                (Path(run_dirs[0]) / "episodes.jsonl").read_text().splitlines()[0]
+            )
+            self.assertIn("terminated_early", first_episode)
+            self.assertFalse(first_episode["terminated_early"])
+            self.assertIsNone(first_episode["termination_reason"])
 
         self.assertEqual(seen_terminal_on_deadlock, [True])
 
