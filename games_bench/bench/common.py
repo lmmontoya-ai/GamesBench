@@ -21,6 +21,30 @@ def add_common_batch_arguments(
         "--config", help="Path to JSON config (models + optional defaults)."
     )
     parser.add_argument("--max-turns", type=int, default=None)
+    parser.add_argument(
+        "--parallelism",
+        type=int,
+        default=None,
+        help="Number of episode workers to run concurrently (default from config or 1).",
+    )
+    parser.add_argument(
+        "--max-inflight-provider",
+        type=int,
+        default=None,
+        help=(
+            "Maximum concurrent provider calls across workers. "
+            "Defaults to 4 for OpenRouter, otherwise parallelism."
+        ),
+    )
+    parser.add_argument(
+        "--stagnation-patience",
+        type=int,
+        default=None,
+        help=(
+            "Early-stop an episode after N consecutive turns with unchanged state. "
+            "Disabled when unset."
+        ),
+    )
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument(

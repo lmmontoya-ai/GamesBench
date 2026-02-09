@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from games_bench.bench import hanoi as hanoi_bench
+from games_bench.llm.providers import ProviderResult, ToolCall
 
 
 class TestHanoiBatch(unittest.TestCase):
@@ -259,6 +264,162 @@ class TestHanoiBatch(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             hanoi_bench.run_batch(args, config={}, game_name="hanoi")
         self.assertIn("Do not mix --case with --n-pegs/--n-disks", str(ctx.exception))
+
+    def test_optimal_turn_cap_multiplier_limits_effective_max_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="cli",
+                model=None,
+                config=None,
+                max_turns=100,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd='python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                cases=["3x3"],
+                n_pegs=None,
+                n_disks=None,
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=1,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+                optimal_turn_cap_multiplier=2.0,
+                parallelism=1,
+                max_inflight_provider=None,
+                stagnation_patience=None,
+            )
+
+            seen_max_turns: list[int] = []
+
+            def fake_episode(*_args, **kwargs):
+                seen_max_turns.append(int(kwargs["max_turns"]))
+                return SimpleNamespace(
+                    solved=False,
+                    game_metrics={
+                        "n_pegs": 3,
+                        "n_disks": 3,
+                        "move_count": 0,
+                        "optimal_steps": 7,
+                    },
+                    move_count=0,
+                    optimal_steps=7,
+                    illegal_moves=0,
+                    tool_calls=0,
+                    usage=None,
+                    cost=None,
+                    events=[],
+                    terminated_early=False,
+                    termination_reason=None,
+                )
+
+            with patch(
+                "games_bench.bench.hanoi.run_tool_calling_episode", fake_episode
+            ):
+                run_dir = hanoi_bench.run_batch(
+                    args,
+                    config={"optimal_turn_cap_multiplier": 2.0},
+                    game_name="hanoi",
+                )[0]
+
+            self.assertEqual(seen_max_turns, [14])
+            episode = json.loads(
+                (Path(run_dir) / "episodes.jsonl").read_text().splitlines()[0]
+            )
+            self.assertEqual(episode["max_turns_effective"], 14)
+
+    def test_parallel_provider_throttle_caps_inflight_calls(self) -> None:
+        class FakeProvider:
+            supports_images = False
+
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+                self._inflight = 0
+                self.max_seen = 0
+
+            def next_tool_calls(self, **_kwargs):
+                with self._lock:
+                    self._inflight += 1
+                    self.max_seen = max(self.max_seen, self._inflight)
+                time.sleep(0.02)
+                with self._lock:
+                    self._inflight -= 1
+                return ProviderResult(
+                    tool_calls=[ToolCall("hanoi_move", {"from_peg": 0, "to_peg": 2})],
+                    raw={},
+                )
+
+        fake_provider = FakeProvider()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="openrouter",
+                model="fake/model",
+                config=None,
+                max_turns=1,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd=None,
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                cases=[
+                    {"n_pegs": 3, "n_disks": 1},
+                    {"n_pegs": 3, "n_disks": 2},
+                    {"n_pegs": 3, "n_disks": 3},
+                    {"n_pegs": 3, "n_disks": 4},
+                ],
+                n_pegs=None,
+                n_disks=None,
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=1,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+                optimal_turn_cap_multiplier=None,
+                parallelism=4,
+                max_inflight_provider=2,
+                stagnation_patience=None,
+            )
+            with patch(
+                "games_bench.bench.hanoi._build_provider",
+                side_effect=lambda *_a, **_k: fake_provider,
+            ):
+                hanoi_bench.run_batch(args, config={}, game_name="hanoi")
+
+        self.assertLessEqual(fake_provider.max_seen, 2)
 
 
 if __name__ == "__main__":

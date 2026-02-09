@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import math
 import os
 import platform
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +53,42 @@ class HanoiCase:
     n_disks: int
     start_peg: int
     goal_peg: int
+
+
+@dataclass(frozen=True, slots=True)
+class HanoiEpisodeJob:
+    episode_id: int
+    variant_id: str
+    run_idx: int
+    case: HanoiCase
+    prompt_variant: PromptVariant
+    tool_variant: ToolVariant
+
+
+@dataclass(frozen=True, slots=True)
+class HanoiEpisodeOutput:
+    episode_id: int
+    variant_id: str
+    episode: dict[str, Any]
+    events: list[dict[str, Any]]
+    raw_lines: list[str]
+    recording: dict[str, Any] | None
+
+
+class _ThrottledProvider:
+    def __init__(self, provider: Any, semaphore: threading.Semaphore | None) -> None:
+        self._provider = provider
+        self._semaphore = semaphore
+        self.supports_images = bool(getattr(provider, "supports_images", False))
+
+    def next_tool_calls(self, **kwargs: Any):
+        if self._semaphore is None:
+            return self._provider.next_tool_calls(**kwargs)
+        with self._semaphore:
+            return self._provider.next_tool_calls(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
 
 
 DEFAULT_PROMPT_VARIANTS = {
@@ -100,6 +140,10 @@ def default_hanoi_config() -> dict[str, Any]:
         "n_disks": [3],
         "runs_per_variant": 3,
         "max_turns": 200,
+        "parallelism": 1,
+        "max_inflight_provider": None,
+        "stagnation_patience": None,
+        "optimal_turn_cap_multiplier": 4.0,
         "start_peg": 0,
         "goal_peg": None,
         "prompt_variants": ["minimal"],
@@ -159,6 +203,7 @@ def _build_provider(
             max_retries=int(retries),
             retry_backoff_s=float(backoff),
             stream_debug=bool(debug),
+            timeout_s=int(getattr(args, "timeout_s", 300)),
         )
     if args.provider == "openai":
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
@@ -328,6 +373,83 @@ def _parse_size(value: str) -> tuple[int, int]:
     if len(parts) != 2:
         raise ValueError(f"Invalid image size: {value}")
     return int(parts[0]), int(parts[1])
+
+
+def _resolve_positive_int(
+    arg_value: int | None,
+    config: dict[str, Any],
+    key: str,
+    default: int,
+) -> int:
+    value = int(arg_value) if arg_value is not None else int(config.get(key, default))
+    if value < 1:
+        raise SystemExit(f"{key} must be >= 1, got {value}")
+    return value
+
+
+def _resolve_optional_positive_int(
+    arg_value: int | None,
+    config: dict[str, Any],
+    key: str,
+) -> int | None:
+    value = arg_value if arg_value is not None else config.get(key)
+    if value is None:
+        return None
+    resolved = int(value)
+    if resolved < 1:
+        raise SystemExit(f"{key} must be >= 1, got {resolved}")
+    return resolved
+
+
+def _resolve_parallel_settings(
+    *,
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    provider_name: str,
+) -> tuple[int, int]:
+    parallelism = _resolve_positive_int(
+        getattr(args, "parallelism", None), config, "parallelism", 1
+    )
+    max_inflight_arg = getattr(args, "max_inflight_provider", None)
+    max_inflight_cfg = config.get("max_inflight_provider")
+    if max_inflight_arg is not None:
+        max_inflight = int(max_inflight_arg)
+    elif max_inflight_cfg is not None:
+        max_inflight = int(max_inflight_cfg)
+    elif provider_name == "openrouter":
+        max_inflight = min(parallelism, 4)
+    else:
+        max_inflight = parallelism
+    if max_inflight < 1:
+        raise SystemExit(f"max_inflight_provider must be >= 1, got {max_inflight}")
+    return parallelism, max_inflight
+
+
+def _resolve_optional_positive_float(
+    arg_value: float | None,
+    config: dict[str, Any],
+    key: str,
+) -> float | None:
+    value = arg_value if arg_value is not None else config.get(key)
+    if value is None:
+        return None
+    resolved = float(value)
+    if resolved <= 0.0:
+        raise SystemExit(f"{key} must be > 0, got {resolved}")
+    return resolved
+
+
+def _effective_hanoi_max_turns(
+    *,
+    max_turns: int,
+    optimal_steps: int,
+    optimal_turn_cap_multiplier: float | None,
+) -> int:
+    if optimal_turn_cap_multiplier is None:
+        return max_turns
+    optimal_cap = int(math.ceil(float(optimal_steps) * optimal_turn_cap_multiplier))
+    optimal_cap = max(1, optimal_cap)
+    return min(max_turns, optimal_cap)
 
 
 def _image_payload(image) -> dict[str, Any]:
@@ -538,6 +660,15 @@ def add_hanoi_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--goal-peg", type=int, default=None)
     parser.add_argument("--runs-per-variant", type=int, default=None)
     parser.add_argument(
+        "--optimal-turn-cap-multiplier",
+        type=float,
+        default=None,
+        help=(
+            "Cap each episode turn budget to min(max_turns, ceil(optimal_steps * M)). "
+            "Disabled when unset."
+        ),
+    )
+    parser.add_argument(
         "--prompt-variant",
         action="append",
         dest="prompt_variants",
@@ -592,6 +723,225 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_batch_arguments(parser)
     add_hanoi_arguments(parser)
     return parser
+
+
+def _raw_lines_for_events(
+    *,
+    events: list[dict[str, Any]],
+    episode_id: int,
+    variant_id: str,
+    instructions: str,
+    tool_schemas_payload: list[dict[str, Any]],
+    state_format: str,
+    image_config: dict[str, Any],
+) -> list[str]:
+    buffer = io.StringIO()
+    _write_raw_generations(
+        events,
+        out_file=buffer,
+        episode_id=episode_id,
+        variant_id=variant_id,
+        instructions=instructions,
+        tool_schemas=tool_schemas_payload,
+        state_format=state_format,
+        image_config=image_config,
+    )
+    return [line for line in buffer.getvalue().splitlines() if line]
+
+
+def _run_hanoi_episode_job(
+    job: HanoiEpisodeJob,
+    *,
+    provider: Any,
+    provider_name: str,
+    model_name: str,
+    max_turns: int,
+    optimal_turn_cap_multiplier: float | None,
+    state_format: str,
+    image_size: tuple[int, int],
+    image_labels: bool,
+    image_background: str,
+    record_provider_raw: bool,
+    record_raw: bool,
+    record: bool,
+    stagnation_patience: int | None,
+) -> HanoiEpisodeOutput:
+    n_pegs = job.case.n_pegs
+    n_disks = job.case.n_disks
+    start_peg = job.case.start_peg
+    goal_peg = job.case.goal_peg
+
+    env = TowerOfHanoiEnv(
+        n_disks=n_disks,
+        n_pegs=n_pegs,
+        start_peg=start_peg,
+        goal_peg=goal_peg,
+        record_history=True,
+        illegal_action_behavior="penalize",
+    )
+    adapter = HanoiGameAdapter(env)
+    instruction_template = job.prompt_variant.instructions
+    if state_format in {"image", "both"}:
+        instruction_template = with_image_instructions(instruction_template)
+    instructions = format_instructions(
+        instruction_template,
+        n_pegs=env.n_pegs,
+        start_peg=env.start_peg,
+        goal_peg=env.goal_peg,
+    )
+    state_formatter = lambda a, pv=job.prompt_variant: a.env.format_prompt_state(
+        include_legal_moves=pv.include_legal_moves,
+        include_action_space=pv.include_action_space,
+    )
+    if state_format == "image":
+        state_formatter = lambda _a: "State image attached."
+
+    state_image_renderer = None
+    if state_format in {"image", "both"}:
+
+        def state_image_renderer_payload(
+            a,
+            size=image_size,
+            labels=image_labels,
+            background=image_background,
+        ):
+            image = render_hanoi_env_image(
+                a.env,
+                size=size,
+                label_pegs=labels,
+                background=background,
+            )
+            return _image_payload(image)
+
+        state_image_renderer = state_image_renderer_payload
+
+    effective_max_turns = _effective_hanoi_max_turns(
+        max_turns=max_turns,
+        optimal_steps=env.optimal_steps(),
+        optimal_turn_cap_multiplier=optimal_turn_cap_multiplier,
+    )
+    result = run_tool_calling_episode(
+        adapter,
+        provider,
+        max_turns=effective_max_turns,
+        instructions=instructions,
+        state_formatter=state_formatter,
+        state_image_renderer=state_image_renderer,
+        allowed_tools=job.tool_variant.allowed_tools,
+        record_provider_raw=record_provider_raw,
+        stagnation_patience=stagnation_patience,
+    )
+    terminated_early = bool(getattr(result, "terminated_early", False))
+    termination_reason = getattr(result, "termination_reason", None)
+
+    episode = {
+        "episode_id": job.episode_id,
+        "variant_id": job.variant_id,
+        "run_idx": job.run_idx,
+        "provider": provider_name,
+        "model": model_name,
+        "n_pegs": result.game_metrics.get("n_pegs", n_pegs),
+        "n_disks": result.game_metrics.get("n_disks", n_disks),
+        "start_peg": env.start_peg,
+        "goal_peg": env.goal_peg,
+        "prompt_variant": job.prompt_variant.name,
+        "tools_variant": job.tool_variant.name,
+        "solved": result.solved,
+        "move_count": result.game_metrics.get("move_count", result.move_count),
+        "optimal_steps": result.game_metrics.get("optimal_steps", result.optimal_steps),
+        "illegal_moves": result.illegal_moves,
+        "tool_calls": result.tool_calls,
+        "max_turns_effective": effective_max_turns,
+        "terminated_early": terminated_early,
+        "termination_reason": termination_reason,
+        "usage": result.usage,
+        "cost": result.cost,
+    }
+
+    recording = None
+    if record:
+        recording = build_recording(
+            events=result.events,
+            metadata={
+                "episode_id": job.episode_id,
+                "variant_id": job.variant_id,
+                "run_idx": job.run_idx,
+                "provider": provider_name,
+                "model": model_name,
+                "n_pegs": n_pegs,
+                "n_disks": n_disks,
+                "start_peg": start_peg,
+                "goal_peg": goal_peg,
+                "prompt_variant": job.prompt_variant.name,
+                "tools_variant": job.tool_variant.name,
+                "solved": result.solved,
+                "max_turns_effective": effective_max_turns,
+                "terminated_early": terminated_early,
+                "termination_reason": termination_reason,
+            },
+        )
+
+    raw_lines: list[str] = []
+    if record_raw:
+        full_tools = tool_schemas(n_pegs=n_pegs)
+        selected_tools = (
+            [t for t in full_tools if t["name"] in job.tool_variant.allowed_tools]
+            if job.tool_variant.allowed_tools is not None
+            else full_tools
+        )
+        raw_lines = _raw_lines_for_events(
+            events=result.events,
+            episode_id=job.episode_id,
+            variant_id=job.variant_id,
+            instructions=instructions,
+            tool_schemas_payload=selected_tools,
+            state_format=state_format,
+            image_config={
+                "size": image_size,
+                "labels": image_labels,
+                "background": image_background,
+            },
+        )
+
+    return HanoiEpisodeOutput(
+        episode_id=job.episode_id,
+        variant_id=job.variant_id,
+        episode=episode,
+        events=result.events,
+        raw_lines=raw_lines,
+        recording=recording,
+    )
+
+
+def _commit_hanoi_episode_output(
+    output: HanoiEpisodeOutput,
+    *,
+    episodes: list[dict[str, Any]],
+    ep_file: Any,
+    trace_file: Any,
+    raw_file: Any,
+    record: bool,
+    recordings_dir: Path,
+) -> None:
+    episode = dict(output.episode)
+    if record and output.recording is not None:
+        recording_path = recordings_dir / f"episode_{output.episode_id:04d}.json"
+        recording_path.write_text(json.dumps(output.recording, indent=2))
+        episode["recording_file"] = str(recording_path)
+    episodes.append(episode)
+    ep_file.write(json.dumps(episode) + "\n")
+    trace_file.write(
+        json.dumps(
+            {
+                "episode_id": output.episode_id,
+                "variant_id": output.variant_id,
+                "events": output.events,
+            }
+        )
+        + "\n"
+    )
+    for line in output.raw_lines:
+        raw_file.write(line + "\n")
 
 
 def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
@@ -744,17 +1094,26 @@ def run_batch(
         str(n_pegs): pair for n_pegs, pair in start_goal_by_n_pegs_int.items()
     }
 
-    runs_per_variant_arg = getattr(args, "runs_per_variant", None)
-    runs_per_variant = (
-        runs_per_variant_arg
-        if runs_per_variant_arg is not None
-        else int(config.get("runs_per_variant", 3))
+    runs_per_variant = _resolve_positive_int(
+        getattr(args, "runs_per_variant", None), config, "runs_per_variant", 3
     )
-    max_turns_arg = getattr(args, "max_turns", None)
-    max_turns = (
-        max_turns_arg
-        if max_turns_arg is not None
-        else int(config.get("max_turns", 200))
+    max_turns = _resolve_positive_int(
+        getattr(args, "max_turns", None), config, "max_turns", 200
+    )
+    parallelism, max_inflight_provider = _resolve_parallel_settings(
+        args=args,
+        config=config,
+        provider_name=provider_name,
+    )
+    stagnation_patience = _resolve_optional_positive_int(
+        getattr(args, "stagnation_patience", None),
+        config,
+        "stagnation_patience",
+    )
+    optimal_turn_cap_multiplier = _resolve_optional_positive_float(
+        getattr(args, "optimal_turn_cap_multiplier", None),
+        config,
+        "optimal_turn_cap_multiplier",
     )
     out_dir_base = getattr(args, "out_dir", None) or config.get(
         "out_dir", "artifacts/runs"
@@ -852,25 +1211,37 @@ def run_batch(
 
     run_dirs: list[Path] = []
     for model_name in models:
-        provider = _build_provider(
-            args,
-            model_name,
-            provider_retries=provider_retries,
-            provider_backoff=provider_backoff,
-            stream_debug=stream_debug,
-        )
-        if state_format in {"image", "both"} and not getattr(
-            provider, "supports_images", False
-        ):
-            raise SystemExit(
-                f"Provider '{provider_name}' does not support state_format='{state_format}'. "
-                "Use --state-format text or a provider with image support."
-            )
         model_slug = model_name.replace("/", "_").replace(":", "_")
         run_id = f"{timestamp}_{provider_name}_{model_slug}"
 
         out_dir = Path(out_dir_base) / provider_name / model_slug / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        provider_semaphore = threading.BoundedSemaphore(max_inflight_provider)
+        provider_local = threading.local()
+
+        def get_provider() -> Any:
+            provider = getattr(provider_local, "provider", None)
+            if provider is None:
+                base_provider = _build_provider(
+                    args,
+                    model_name,
+                    provider_retries=provider_retries,
+                    provider_backoff=provider_backoff,
+                    stream_debug=stream_debug,
+                )
+                provider = _ThrottledProvider(base_provider, provider_semaphore)
+                provider_local.provider = provider
+            return provider
+
+        preflight_provider = get_provider()
+        if state_format in {"image", "both"} and not getattr(
+            preflight_provider, "supports_images", False
+        ):
+            raise SystemExit(
+                f"Provider '{provider_name}' does not support state_format='{state_format}'. "
+                "Use --state-format text or a provider with image support."
+            )
 
         default_schema_n_pegs = scenarios[0].n_pegs
         full_tool_schemas = tool_schemas(n_pegs=default_schema_n_pegs)
@@ -912,6 +1283,10 @@ def run_batch(
             },
             "runs_per_variant": runs_per_variant,
             "max_turns": max_turns,
+            "parallelism": parallelism,
+            "max_inflight_provider": max_inflight_provider,
+            "stagnation_patience": stagnation_patience,
+            "optimal_turn_cap_multiplier": optimal_turn_cap_multiplier,
             "prompt_variants": [asdict(v) for v in selected_prompt_variants],
             "tool_variants": [asdict(v) for v in selected_tool_variants],
             "tool_schemas": full_tool_schemas,
@@ -938,169 +1313,85 @@ def run_batch(
             recordings_dir.mkdir(parents=True, exist_ok=True)
 
         episodes: list[dict[str, Any]] = []
+        jobs: list[HanoiEpisodeJob] = []
         episode_id = 0
+        for case in scenarios:
+            for prompt_variant in selected_prompt_variants:
+                for tool_variant in selected_tool_variants:
+                    variant_id = (
+                        f"p{case.n_pegs}_n{case.n_disks}__prompt={prompt_variant.name}"
+                        f"__tools={tool_variant.name}"
+                    )
+                    for run_idx in range(runs_per_variant):
+                        jobs.append(
+                            HanoiEpisodeJob(
+                                episode_id=episode_id,
+                                variant_id=variant_id,
+                                run_idx=run_idx,
+                                case=case,
+                                prompt_variant=prompt_variant,
+                                tool_variant=tool_variant,
+                            )
+                        )
+                        episode_id += 1
+
         raw_path = out_dir / "raw_generations.jsonl"
         with (
             episodes_path.open("w") as ep_file,
             traces_path.open("w") as trace_file,
             raw_path.open("w") if record_raw else open(os.devnull, "w") as raw_file,
         ):
-            for case in scenarios:
-                n_pegs = case.n_pegs
-                n_disks = case.n_disks
-                start_peg = case.start_peg
-                goal_peg = case.goal_peg
-                for prompt_variant in selected_prompt_variants:
-                    for tool_variant in selected_tool_variants:
-                        variant_id = (
-                            f"p{n_pegs}_n{n_disks}__prompt={prompt_variant.name}"
-                            f"__tools={tool_variant.name}"
-                        )
-                        for run_idx in range(runs_per_variant):
-                            env = TowerOfHanoiEnv(
-                                n_disks=n_disks,
-                                n_pegs=n_pegs,
-                                start_peg=start_peg,
-                                goal_peg=goal_peg,
-                                record_history=True,
-                                illegal_action_behavior="penalize",
-                            )
-                            adapter = HanoiGameAdapter(env)
-                            instruction_template = prompt_variant.instructions
-                            if state_format in {"image", "both"}:
-                                instruction_template = with_image_instructions(
-                                    instruction_template
-                                )
-                            instructions = format_instructions(
-                                instruction_template,
-                                n_pegs=env.n_pegs,
-                                start_peg=env.start_peg,
-                                goal_peg=env.goal_peg,
-                            )
-                            state_formatter = (
-                                lambda a, pv=prompt_variant: a.env.format_prompt_state(
-                                    include_legal_moves=pv.include_legal_moves,
-                                    include_action_space=pv.include_action_space,
-                                )
-                            )
-                            if state_format == "image":
-                                state_formatter = lambda _a: "State image attached."
-                            state_image_renderer = None
-                            if state_format in {"image", "both"}:
+            pending_by_episode: dict[int, HanoiEpisodeOutput] = {}
+            next_episode_id = 0
 
-                                def state_image_renderer_payload(
-                                    a,
-                                    size=image_size,
-                                    labels=image_labels,
-                                    background=image_background,
-                                ):
-                                    image = render_hanoi_env_image(
-                                        a.env,
-                                        size=size,
-                                        label_pegs=labels,
-                                        background=background,
-                                    )
-                                    return _image_payload(image)
+            def run_job(job: HanoiEpisodeJob) -> HanoiEpisodeOutput:
+                return _run_hanoi_episode_job(
+                    job,
+                    provider=get_provider(),
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    max_turns=max_turns,
+                    optimal_turn_cap_multiplier=optimal_turn_cap_multiplier,
+                    state_format=state_format,
+                    image_size=image_size,
+                    image_labels=image_labels,
+                    image_background=image_background,
+                    record_provider_raw=record_provider_raw,
+                    record_raw=record_raw,
+                    record=record,
+                    stagnation_patience=stagnation_patience,
+                )
 
-                                state_image_renderer = state_image_renderer_payload
-                            result = run_tool_calling_episode(
-                                adapter,
-                                provider,
-                                max_turns=max_turns,
-                                instructions=instructions,
-                                state_formatter=state_formatter,
-                                state_image_renderer=state_image_renderer,
-                                allowed_tools=tool_variant.allowed_tools,
-                                record_provider_raw=record_provider_raw,
+            if parallelism == 1:
+                for job in jobs:
+                    output = run_job(job)
+                    _commit_hanoi_episode_output(
+                        output,
+                        episodes=episodes,
+                        ep_file=ep_file,
+                        trace_file=trace_file,
+                        raw_file=raw_file,
+                        record=record,
+                        recordings_dir=recordings_dir,
+                    )
+            else:
+                with ThreadPoolExecutor(max_workers=parallelism) as executor:
+                    future_map = {executor.submit(run_job, job): job for job in jobs}
+                    for future in as_completed(future_map):
+                        output = future.result()
+                        pending_by_episode[output.episode_id] = output
+                        while next_episode_id in pending_by_episode:
+                            ordered = pending_by_episode.pop(next_episode_id)
+                            _commit_hanoi_episode_output(
+                                ordered,
+                                episodes=episodes,
+                                ep_file=ep_file,
+                                trace_file=trace_file,
+                                raw_file=raw_file,
+                                record=record,
+                                recordings_dir=recordings_dir,
                             )
-                            if record_raw:
-                                full_tools = tool_schemas(n_pegs=n_pegs)
-                                tools = (
-                                    [
-                                        t
-                                        for t in full_tools
-                                        if t["name"] in tool_variant.allowed_tools
-                                    ]
-                                    if tool_variant.allowed_tools is not None
-                                    else full_tools
-                                )
-                                image_config = {
-                                    "size": image_size,
-                                    "labels": image_labels,
-                                    "background": image_background,
-                                }
-                                _write_raw_generations(
-                                    result.events,
-                                    out_file=raw_file,
-                                    episode_id=episode_id,
-                                    variant_id=variant_id,
-                                    instructions=instructions,
-                                    tool_schemas=tools,
-                                    state_format=state_format,
-                                    image_config=image_config,
-                                )
-                            episode = {
-                                "episode_id": episode_id,
-                                "variant_id": variant_id,
-                                "run_idx": run_idx,
-                                "provider": provider_name,
-                                "model": model_name,
-                                "n_pegs": result.game_metrics.get("n_pegs", n_pegs),
-                                "n_disks": result.game_metrics.get("n_disks", n_disks),
-                                "start_peg": env.start_peg,
-                                "goal_peg": env.goal_peg,
-                                "prompt_variant": prompt_variant.name,
-                                "tools_variant": tool_variant.name,
-                                "solved": result.solved,
-                                "move_count": result.game_metrics.get(
-                                    "move_count", result.move_count
-                                ),
-                                "optimal_steps": result.game_metrics.get(
-                                    "optimal_steps", result.optimal_steps
-                                ),
-                                "illegal_moves": result.illegal_moves,
-                                "tool_calls": result.tool_calls,
-                                "usage": result.usage,
-                                "cost": result.cost,
-                            }
-                            if record:
-                                recording = build_recording(
-                                    events=result.events,
-                                    metadata={
-                                        "episode_id": episode_id,
-                                        "variant_id": variant_id,
-                                        "run_idx": run_idx,
-                                        "provider": provider_name,
-                                        "model": model_name,
-                                        "n_pegs": n_pegs,
-                                        "n_disks": n_disks,
-                                        "start_peg": start_peg,
-                                        "goal_peg": goal_peg,
-                                        "prompt_variant": prompt_variant.name,
-                                        "tools_variant": tool_variant.name,
-                                        "solved": result.solved,
-                                    },
-                                )
-                                recording_path = (
-                                    recordings_dir / f"episode_{episode_id:04d}.json"
-                                )
-                                recording_path.write_text(
-                                    json.dumps(recording, indent=2)
-                                )
-                                episode["recording_file"] = str(recording_path)
-                            episodes.append(episode)
-                            ep_file.write(json.dumps(episode) + "\n")
-                            trace_file.write(
-                                json.dumps(
-                                    {
-                                        "episode_id": episode_id,
-                                        "variant_id": variant_id,
-                                        "events": result.events,
-                                    }
-                                )
-                                + "\n"
-                            )
-                            episode_id += 1
+                            next_episode_id += 1
 
         summary = {"overall": _compute_metrics(episodes), "variants": {}}
         for episode in episodes:

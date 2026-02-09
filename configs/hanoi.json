@@ -3,6 +3,8 @@
     "openrouter": ["openai/gpt-4.1-mini"]
   },
   "out_dir": "artifacts/runs",
+  "parallelism": 2,
+  "max_inflight_provider": 2,
   "games": {
     "hanoi": {
       "n_pegs": [3, 4],
@@ -10,7 +12,9 @@
       "prompt_variants": ["minimal", "full"],
       "tool_variants": ["move_only", "all_tools"],
       "runs_per_variant": 3,
-      "max_turns": 200
+      "max_turns": 200,
+      "stagnation_patience": 40,
+      "optimal_turn_cap_multiplier": 4.0
     }
   }
 }

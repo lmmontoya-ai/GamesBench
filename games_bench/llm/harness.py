@@ -17,6 +17,8 @@ class EpisodeResult:
     events: list[dict[str, Any]]
     usage: dict[str, float] | None
     cost: float | None
+    terminated_early: bool = False
+    termination_reason: str | None = None
 
     @property
     def move_count(self) -> int:
@@ -57,6 +59,10 @@ def _accumulate_usage(total: dict[str, float], usage: dict[str, Any] | None) -> 
             total[target] = total.get(target, 0.0) + float(value)
 
 
+def _snapshot_key(snapshot: Any) -> str:
+    return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def run_tool_calling_episode(
     adapter: GameAdapter,
     provider: Any,
@@ -67,6 +73,9 @@ def run_tool_calling_episode(
     state_image_renderer: Callable[[GameAdapter], dict[str, Any]] | None = None,
     allowed_tools: list[str] | None = None,
     record_provider_raw: bool = False,
+    stagnation_patience: int | None = None,
+    deadlock_patience: int | None = None,
+    deadlock_checker: Callable[[GameAdapter], bool] | None = None,
 ) -> EpisodeResult:
     tools = adapter.tool_schemas()
     if allowed_tools is not None:
@@ -81,6 +90,10 @@ def run_tool_calling_episode(
     state_formatter = state_formatter or (lambda a: a.format_state())
     if state_image_renderer and not getattr(provider, "supports_images", False):
         raise ValueError("Provider does not support image inputs.")
+    if stagnation_patience is not None and int(stagnation_patience) < 1:
+        raise ValueError("stagnation_patience must be >= 1 when provided.")
+    if deadlock_patience is not None and int(deadlock_patience) < 1:
+        raise ValueError("deadlock_patience must be >= 1 when provided.")
 
     illegal_moves = 0
     tool_calls = 0
@@ -88,6 +101,11 @@ def run_tool_calling_episode(
     usage_totals: dict[str, float] = {}
     cost_total = 0.0
     cost_seen = False
+    last_snapshot: str | None = None
+    stagnation_turns = 0
+    deadlock_turns = 0
+    terminated_early = False
+    termination_reason: str | None = None
 
     for _ in range(max_turns):
         if adapter.is_solved():
@@ -95,6 +113,21 @@ def run_tool_calling_episode(
         state_text = state_formatter(adapter)
         state_image = state_image_renderer(adapter) if state_image_renderer else None
         snapshot = adapter.get_state_snapshot()
+        snapshot_key = _snapshot_key(snapshot)
+        if last_snapshot is not None and snapshot_key == last_snapshot:
+            stagnation_turns += 1
+        else:
+            stagnation_turns = 0
+        last_snapshot = snapshot_key
+
+        is_deadlocked = False
+        if deadlock_checker is not None:
+            is_deadlocked = bool(deadlock_checker(adapter))
+        if is_deadlocked:
+            deadlock_turns += 1
+        else:
+            deadlock_turns = 0
+
         try:
             state_payload = json.loads(state_text)
         except json.JSONDecodeError:
@@ -110,6 +143,32 @@ def run_tool_calling_episode(
                 "height": state_image.get("height"),
             }
             events.append({"type": "state_image", "meta": meta})
+        if stagnation_patience is not None and stagnation_turns >= int(
+            stagnation_patience
+        ):
+            terminated_early = True
+            termination_reason = f"stagnation:{stagnation_turns}"
+            events.append(
+                {
+                    "type": "early_stop",
+                    "reason": termination_reason,
+                    "stagnation_turns": stagnation_turns,
+                    "deadlock_turns": deadlock_turns,
+                }
+            )
+            break
+        if deadlock_patience is not None and deadlock_turns >= int(deadlock_patience):
+            terminated_early = True
+            termination_reason = f"deadlock:{deadlock_turns}"
+            events.append(
+                {
+                    "type": "early_stop",
+                    "reason": termination_reason,
+                    "stagnation_turns": stagnation_turns,
+                    "deadlock_turns": deadlock_turns,
+                }
+            )
+            break
 
         result: ProviderResult = provider.next_tool_calls(
             state_text=state_text,
@@ -169,4 +228,6 @@ def run_tool_calling_episode(
         events=events,
         usage=usage_totals or None,
         cost=cost_total if cost_seen else None,
+        terminated_early=terminated_early,
+        termination_reason=termination_reason,
     )

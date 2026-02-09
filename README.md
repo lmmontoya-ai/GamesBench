@@ -55,6 +55,7 @@ Run canonical benchmark suite:
 - List suites: `uv run games-bench run --list-suites`
 - Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
 - Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
+- Override throughput on the CLI: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --parallelism 4 --max-inflight-provider 4`
 
 ## OpenRouter Benchmark Workflows
 
@@ -96,6 +97,10 @@ Notes:
 - `models.openrouter` can be either a string (single model) or a list.
 - `--config` values override suite defaults where keys overlap.
 - You can combine `--game` with model lists to benchmark only one game.
+- Runtime controls:
+  - `--parallelism` controls concurrent episode workers.
+  - `--max-inflight-provider` caps provider requests in-flight across workers.
+  - `--stagnation-patience` early-stops episodes after repeated no-change turns.
 
 ## Config Model
 
@@ -105,10 +110,10 @@ Batch config precedence:
 
 `config.json` supports:
 
-- Global keys: `models`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`
+- Global keys: `models`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
 - Per-game keys under `"games"`:
-  - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`
-  - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
+  - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`, `optimal_turn_cap_multiplier`
+  - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
   - Sokoban (procedural):
     - cross-product mode: `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`
     - case mode: `procgen_cases` entries with `grid_size`, `box_count`, optional `levels_per_combo`, `wall_density`, `scramble_steps` (int, `[min,max]`, `"min-max"`, or `"min+"`)

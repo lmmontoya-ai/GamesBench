@@ -45,6 +45,8 @@ def _standard_v1_config() -> dict[str, Any]:
         "provider_retries": 2,
         "provider_backoff": 1.0,
         "stream_debug": False,
+        "parallelism": 4,
+        "max_inflight_provider": 4,
         "games": {
             "hanoi": {
                 # Exact difficulty ladder (no cartesian product):
@@ -62,6 +64,8 @@ def _standard_v1_config() -> dict[str, Any]:
                 ],
                 "runs_per_variant": 5,
                 "max_turns": 400,
+                "stagnation_patience": 40,
+                "optimal_turn_cap_multiplier": 4.0,
                 "prompt_variants": ["full"],
                 "tool_variants": ["move_only"],
                 "state_format": "text",
@@ -99,6 +103,8 @@ def _standard_v1_config() -> dict[str, Any]:
                 "max_levels": None,
                 "runs_per_level": 3,
                 "max_turns": 400,
+                "stagnation_patience": 80,
+                "deadlock_patience": 8,
                 "prompt_variants": ["full"],
                 "tool_variants": ["move_and_query"],
                 "state_format": "text",
