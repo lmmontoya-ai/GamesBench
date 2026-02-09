@@ -29,6 +29,46 @@ class ProviderResult:
     cost: float | None = None
 
 
+def _tool_call_from_name_and_arguments(
+    name: Any,
+    arguments: Any,
+) -> ToolCall | None:
+    if name is None:
+        return None
+    parsed_arguments = arguments
+    if isinstance(parsed_arguments, str):
+        parsed = _parse_json_loose(parsed_arguments)
+        if isinstance(parsed, dict):
+            parsed_arguments = parsed
+    if not isinstance(parsed_arguments, dict):
+        parsed_arguments = {"value": parsed_arguments}
+    return ToolCall(name=str(name), arguments=parsed_arguments)
+
+
+def _normalize_tool_call_mapping(obj: dict[str, Any]) -> list[ToolCall]:
+    if "tool_call" in obj:
+        return _normalize_tool_calls(obj["tool_call"])
+    if "tool_calls" in obj:
+        return _normalize_tool_calls(obj["tool_calls"])
+    if "name" in obj and "arguments" in obj:
+        call = _tool_call_from_name_and_arguments(obj.get("name"), obj.get("arguments"))
+        return [call] if call is not None else []
+    if "function" in obj and isinstance(obj["function"], dict):
+        func = obj["function"]
+        if "name" in func and "arguments" in func:
+            call = _tool_call_from_name_and_arguments(
+                func.get("name"),
+                func.get("arguments"),
+            )
+            return [call] if call is not None else []
+    for key in ("content", "message", "output", "text"):
+        if key in obj:
+            normalized = _normalize_tool_calls(obj[key])
+            if normalized:
+                return normalized
+    return []
+
+
 def _normalize_tool_calls(obj: Any) -> list[ToolCall]:
     if obj is None:
         return []
@@ -45,33 +85,52 @@ def _normalize_tool_calls(obj: Any) -> list[ToolCall]:
             calls.extend(_normalize_tool_calls(item))
         return calls
     if isinstance(obj, dict):
-        if "tool_call" in obj:
-            return _normalize_tool_calls(obj["tool_call"])
-        if "tool_calls" in obj:
-            return _normalize_tool_calls(obj["tool_calls"])
-        if "name" in obj and "arguments" in obj:
-            args = obj["arguments"]
-            if isinstance(args, str):
-                parsed = _parse_json_loose(args)
-                if isinstance(parsed, dict):
-                    args = parsed
-            if not isinstance(args, dict):
-                args = {"value": args}
-            return [ToolCall(name=str(obj["name"]), arguments=args)]
-        if "function" in obj and isinstance(obj["function"], dict):
-            func = obj["function"]
-            if "name" in func and "arguments" in func:
-                args = func["arguments"]
-                if isinstance(args, str):
-                    parsed = _parse_json_loose(args)
-                    if isinstance(parsed, dict):
-                        args = parsed
-                if not isinstance(args, dict):
-                    args = {"value": args}
-                return [ToolCall(name=str(func["name"]), arguments=args)]
-        for key in ("content", "message", "output", "text"):
-            if key in obj:
-                return _normalize_tool_calls(obj[key])
+        return _normalize_tool_call_mapping(obj)
+
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        try:
+            dumped = dump()
+        except Exception:
+            dumped = None
+        if dumped is not None and dumped is not obj:
+            normalized = _normalize_tool_calls(dumped)
+            if normalized:
+                return normalized
+
+    obj_type = getattr(obj, "type", None)
+    if obj_type == "function_call":
+        call = _tool_call_from_name_and_arguments(
+            getattr(obj, "name", None),
+            getattr(obj, "arguments", None),
+        )
+        if call is not None:
+            return [call]
+
+    for key in ("tool_call", "tool_calls", "content", "message", "output", "text"):
+        if hasattr(obj, key):
+            normalized = _normalize_tool_calls(getattr(obj, key))
+            if normalized:
+                return normalized
+
+    function_obj = getattr(obj, "function", None)
+    if function_obj is not None:
+        call = _tool_call_from_name_and_arguments(
+            getattr(function_obj, "name", None),
+            getattr(function_obj, "arguments", None),
+        )
+        if call is not None:
+            return [call]
+
+    call = _tool_call_from_name_and_arguments(
+        getattr(obj, "name", None),
+        getattr(obj, "arguments", None),
+    )
+    if call is not None and (
+        obj_type in {"function", "tool_call", "function_call"}
+        or hasattr(obj, "arguments")
+    ):
+        return [call]
     return []
 
 
@@ -479,12 +538,24 @@ class OpenRouterProvider:
             err = choices[0].get("error")
         if err and isinstance(err, dict):
             code = err.get("code")
-            if isinstance(code, int) and 500 <= code < 600 and self.max_retries > 0:
-                # Retry on upstream 5xx embedded in payload
+            if isinstance(code, int) and 500 <= code < 600:
+                # Retry on upstream 5xx embedded in payload.
+                if self.max_retries < 1:
+                    return ProviderResult(
+                        [],
+                        raw=data,
+                        error=f"Provider error: {err}",
+                        usage=usage,
+                        cost=cost,
+                    )
+                retry_exception: Exception | None = None
+                retry_error_payload: dict[str, Any] | None = err
+                recovered = False
                 for attempt in range(1, self.max_retries + 1):
                     time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
                     try:
                         data = self._completion_payload(client, kwargs)
+                        retry_exception = None
                         usage = _normalize_usage(data.get("usage"))
                         cost = _extract_cost(usage, data)
                         choices = data.get("choices", [])
@@ -497,9 +568,39 @@ class OpenRouterProvider:
                                 cost=cost,
                             )
                         message = choices[0].get("message", {})
+                        retry_error_payload = (
+                            choices[0].get("error")
+                            if isinstance(choices[0], dict)
+                            else None
+                        )
+                        retry_code = (
+                            retry_error_payload.get("code")
+                            if isinstance(retry_error_payload, dict)
+                            else None
+                        )
+                        if isinstance(retry_code, int) and 500 <= retry_code < 600:
+                            continue
+                        recovered = True
                         break
-                    except Exception:
+                    except Exception as exc:
+                        retry_exception = exc
                         continue
+                if not recovered:
+                    if retry_exception is not None:
+                        return ProviderResult(
+                            [],
+                            raw=data,
+                            error=f"Provider error after retries: {retry_exception}",
+                            usage=usage,
+                            cost=cost,
+                        )
+                    return ProviderResult(
+                        [],
+                        raw=data,
+                        error=f"Provider error after retries: {retry_error_payload}",
+                        usage=usage,
+                        cost=cost,
+                    )
         tool_calls = message.get("tool_calls")
         if tool_calls:
             return ProviderResult(
@@ -584,13 +685,13 @@ class OpenAIResponsesProvider:
         cost = _extract_cost(usage, data if isinstance(data, dict) else None)
 
         output = getattr(response, "output", None)
-        output_items = output or []
-        tool_calls = [
-            x for x in output_items if getattr(x, "type", None) == "function_call"
-        ]
+        output_items = output if output is not None else []
+        tool_calls = _normalize_tool_calls(output_items)
+        if not tool_calls and isinstance(data, dict):
+            tool_calls = _normalize_tool_calls(data.get("output"))
         if tool_calls:
             return ProviderResult(
-                _normalize_tool_calls(tool_calls),
+                tool_calls,
                 raw=response,
                 usage=usage,
                 cost=cost,

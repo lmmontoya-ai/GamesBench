@@ -41,6 +41,14 @@ class SokobanGameAdapter:
             direction = arguments.get("direction")
             result = self._toolbox.move(direction)
             ok = bool(result.get("ok", False))
+            deadlocked = bool(result.get("deadlocked", False))
+            terminate_on_deadlock = (
+                ok
+                and deadlocked
+                and self.env.detect_deadlocks
+                and self.env.terminal_on_deadlock
+                and not self.env.is_solved()
+            )
             return ToolExecution(
                 result=result,
                 meta={
@@ -48,6 +56,10 @@ class SokobanGameAdapter:
                     "illegal_action": not ok,
                     "action_kind": "move",
                     "counts_as_move": ok,
+                    "terminate_episode": terminate_on_deadlock,
+                    "termination_reason": (
+                        "deadlock_terminal" if terminate_on_deadlock else None
+                    ),
                 },
             )
 

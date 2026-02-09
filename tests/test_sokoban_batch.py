@@ -158,6 +158,21 @@ class TestSokobanBatch(unittest.TestCase):
             sokoban_bench.run_batch(args, config={}, game_name="sokoban")
         self.assertIn("requires tool 'sokoban_get_legal_moves'", str(ctx.exception))
 
+    def test_allowed_tools_override_accepts_list_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            run_dir = sokoban_bench.run_batch(
+                args,
+                config={"allowed_tools": ["sokoban_move", "sokoban_get_state"]},
+                game_name="sokoban",
+            )[0]
+            run_config = json.loads((Path(run_dir) / "run_config.json").read_text())
+            self.assertEqual(run_config["tool_variants"][0]["name"], "custom")
+            self.assertEqual(
+                run_config["tool_variants"][0]["allowed_tools"],
+                ["sokoban_move", "sokoban_get_state"],
+            )
+
     def test_move_only_variant_overrides_terminal_on_deadlock(self) -> None:
         args = _base_args(out_dir="artifacts/test_runs", state_format="text")
         seen_terminal_on_deadlock: list[bool] = []
