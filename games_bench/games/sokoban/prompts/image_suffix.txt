@@ -1,5 +1,6 @@
 Image mode notes:
-- Trust the rendered board as the source of truth.
+- Trust the rendered board as the source of truth for spatial layout.
+- If both text state and image are provided, use both; prefer explicit text fields for computed values (for example legal moves or deadlock status).
 - Visual legend:
   - dark gray tiles = walls (`#`)
   - tan tiles = floor (` `)
