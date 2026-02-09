@@ -7,6 +7,7 @@ from games_bench.bench.registry import (
     list_benchmarks,
     load_builtin_benchmarks,
 )
+from games_bench.bench.suites import get_suite, list_suites, load_builtin_suites
 from games_bench.games.registry import get_game, list_games, load_builtin_games
 
 
@@ -58,10 +59,23 @@ class TestRegistry(unittest.TestCase):
     def test_unknown_entries_raise(self) -> None:
         load_builtin_games()
         load_builtin_benchmarks()
+        load_builtin_suites()
         with self.assertRaises(KeyError):
             get_game("__unknown_game__")
         with self.assertRaises(KeyError):
             get_benchmark("__unknown_benchmark__")
+        with self.assertRaises(KeyError):
+            get_suite("__unknown_suite__")
+
+    def test_suite_registry_loads_standard_suite(self) -> None:
+        load_builtin_suites()
+        self.assertIn("standard-v1", list_suites())
+        suite = get_suite("standard-v1")
+        self.assertEqual(suite.name, "standard-v1")
+        config_a = suite.config_factory()
+        config_b = suite.config_factory()
+        self.assertEqual(config_a, config_b)
+        self.assertIsNot(config_a, config_b)
 
 
 if __name__ == "__main__":

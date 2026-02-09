@@ -20,6 +20,8 @@ class TestBatchCli(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("--provider", output)
         self.assertIn("--stream-debug", output)
+        self.assertIn("--suite", output)
+        self.assertIn("--list-suites", output)
         self.assertIn("--game", output)
         self.assertNotIn("--level-set", output)
         self.assertNotIn("--n-disks", output)
@@ -78,6 +80,114 @@ class TestBatchCli(unittest.TestCase):
             run_dir = Path(payload["run_dirs"][0])
             run_config = json.loads((run_dir / "run_config.json").read_text())
             self.assertEqual(run_config["max_turns"], 1)
+
+    def test_list_suites_outputs_builtin_suite(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = batch.main(["--list-suites"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout.getvalue())
+        names = {entry["name"] for entry in payload["suites"]}
+        self.assertIn("standard-v1", names)
+
+    def test_suite_standard_v1_applies_hanoi_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--suite",
+                        "standard-v1",
+                        "--game",
+                        "hanoi",
+                        "--max-turns",
+                        "1",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+            run_dir = Path(payload["run_dirs"][0])
+            run_config = json.loads((run_dir / "run_config.json").read_text())
+            self.assertEqual(len(run_config["cases"]), 5)
+            self.assertEqual(run_config["runs_per_variant"], 5)
+            episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
+            self.assertEqual(len(episodes), 25)
+
+    def test_config_overrides_suite_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "override.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "games": {
+                            "hanoi": {
+                                "cases": [{"n_pegs": 3, "n_disks": 1}],
+                                "runs_per_variant": 1,
+                                "max_turns": 1,
+                                "prompt_variants": ["minimal"],
+                                "tool_variants": ["move_only"],
+                            }
+                        }
+                    }
+                )
+            )
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--suite",
+                        "standard-v1",
+                        "--config",
+                        str(config_path),
+                        "--game",
+                        "hanoi",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            run_dir = Path(json.loads(stdout.getvalue())["run_dirs"][0])
+            run_config = json.loads((run_dir / "run_config.json").read_text())
+            self.assertEqual(run_config["runs_per_variant"], 1)
+            self.assertEqual(len(run_config["cases"]), 1)
+            self.assertEqual(run_config["cases"][0]["n_pegs"], 3)
+            episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
+            self.assertEqual(len(episodes), 1)
+
+    def test_unknown_suite_raises(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            batch.main(
+                [
+                    "--provider",
+                    "cli",
+                    "--cli-cmd",
+                    'python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                    "--suite",
+                    "unknown-suite",
+                    "--game",
+                    "hanoi",
+                ]
+            )
+        self.assertIn("Unknown suite", str(ctx.exception))
 
 
 if __name__ == "__main__":

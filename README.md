@@ -45,6 +45,12 @@ Run config-driven mode (multi-game capable):
 - `uv run games-bench run --provider openrouter --config configs/hanoi.json --game hanoi`
 - `uv run games-bench run --provider openrouter --config configs/sokoban.json --game sokoban`
 
+Run canonical benchmark suite:
+
+- List suites: `uv run games-bench run --list-suites`
+- Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
+- Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
+
 ## Config Model
 
 Batch config precedence:
@@ -55,7 +61,7 @@ Batch config precedence:
 
 - Global keys: `models`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`
 - Per-game keys under `"games"`:
-  - Hanoi: `n_pegs`, `n_disks`, `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`
+  - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`
   - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
   - Sokoban (procedural): `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`, `procgen_seed`, `procgen_wall_density`, `procgen_scramble_steps`, plus standard run keys (`runs_per_level`, `prompt_variants`, etc.)
 
@@ -73,6 +79,7 @@ See examples:
 - `configs/hanoi.json`
 - `configs/sokoban.json`
 - `configs/sokoban_procgen.json`
+- `configs/standard_v1.json`
 
 ## Outputs
 
