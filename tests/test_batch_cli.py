@@ -119,10 +119,26 @@ class TestBatchCli(unittest.TestCase):
             self.assertEqual(len(payload["run_dirs"]), 1)
             run_dir = Path(payload["run_dirs"][0])
             run_config = json.loads((run_dir / "run_config.json").read_text())
-            self.assertEqual(len(run_config["cases"]), 5)
+            expected_cases = {
+                (3, 3),
+                (3, 4),
+                (3, 5),
+                (3, 10),
+                (3, 20),
+                (4, 4),
+                (4, 5),
+                (4, 10),
+                (4, 20),
+            }
+            self.assertEqual(len(run_config["cases"]), len(expected_cases))
+            actual_cases = {
+                (int(case["n_pegs"]), int(case["n_disks"]))
+                for case in run_config["cases"]
+            }
+            self.assertEqual(actual_cases, expected_cases)
             self.assertEqual(run_config["runs_per_variant"], 5)
             episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
-            self.assertEqual(len(episodes), 25)
+            self.assertEqual(len(episodes), 45)
 
     def test_config_overrides_suite_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

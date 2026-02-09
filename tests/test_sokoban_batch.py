@@ -239,6 +239,57 @@ class TestSokobanBatch(unittest.TestCase):
             all(level.level_id.startswith("procgen:8x8:b2") for level in levels)
         )
 
+    def test_select_levels_supports_procgen_cases(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.level_ids = None
+        args.level_sets = None
+        levels = sokoban_bench._select_levels(
+            args,
+            config={
+                "procgen_cases": [
+                    {
+                        "grid_size": "8x8",
+                        "box_count": 6,
+                        "scramble_steps": [140, 180],
+                        "levels_per_combo": 1,
+                    },
+                    {
+                        "grid_size": "10x10",
+                        "box_count": 7,
+                        "scramble_steps": "220-260",
+                        "levels_per_combo": 1,
+                    },
+                    {
+                        "grid_size": "12x12",
+                        "box_count": 8,
+                        "scramble_steps": "300+",
+                        "levels_per_combo": 1,
+                    },
+                ],
+                "procgen_seed": 11,
+                "procgen_wall_density": 0.08,
+            },
+        )
+        self.assertEqual(len(levels), 3)
+        self.assertTrue(all(level.level_id.startswith("procgen:") for level in levels))
+        self.assertTrue(any(":b6:" in level.level_id for level in levels))
+        self.assertTrue(any(":b7:" in level.level_id for level in levels))
+        self.assertTrue(any(":b8:" in level.level_id for level in levels))
+
+    def test_resolve_procgen_spec_rejects_mixed_case_and_grid_modes(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.procgen_grid_sizes = ["8x8"]
+        args.procgen_box_counts = ["2"]
+        with self.assertRaises(SystemExit):
+            sokoban_bench._resolve_procgen_spec(
+                args,
+                config={
+                    "procgen_cases": [
+                        {"grid_size": "8x8", "box_count": 6, "levels_per_combo": 1}
+                    ]
+                },
+            )
+
     def test_select_levels_rejects_mixed_static_and_procgen_flags(self) -> None:
         args = _base_args(out_dir="artifacts/test_runs", state_format="text")
         args.procgen_grid_sizes = ["8x8"]
@@ -263,7 +314,10 @@ class TestSokobanBatch(unittest.TestCase):
             run_config = json.loads((Path(run_dirs[0]) / "run_config.json").read_text())
             self.assertEqual(run_config["level_source"], "procgen")
             self.assertTrue(run_config["procgen"]["enabled"])
+            self.assertEqual(run_config["procgen"]["mode"], "grid_box_product")
             self.assertEqual(run_config["procgen"]["grid_sizes"], ["8x8"])
+            self.assertEqual(len(run_config["procgen"]["cases"]), 1)
+            self.assertEqual(run_config["procgen"]["cases"][0]["box_count"], 2)
 
     def test_compute_metrics_handles_empty_input(self) -> None:
         metrics = sokoban_bench._compute_metrics([])

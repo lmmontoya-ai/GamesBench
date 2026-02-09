@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import random
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from games_bench.games.sokoban.level_loader import (
     load_level_by_id,
 )
 from games_bench.games.sokoban.procgen import (
-    generate_procedural_levels,
+    generate_procedural_level,
     parse_grid_size,
 )
 from games_bench.games.sokoban.prompts import (
@@ -102,6 +103,8 @@ DEFAULT_TOOL_VARIANTS = {
     ),
 }
 
+_PROCGEN_PLUS_SCRAMBLE_SPAN = 60
+
 
 def default_sokoban_config() -> dict[str, Any]:
     return {
@@ -125,6 +128,7 @@ def default_sokoban_config() -> dict[str, Any]:
         "provider_retries": 2,
         "provider_backoff": 1.0,
         "stream_debug": False,
+        "procgen_cases": None,
         "procgen_grid_sizes": None,
         "procgen_box_counts": None,
         "procgen_levels_per_combo": 1,
@@ -248,6 +252,85 @@ def _parse_int_list(values: Iterable[str]) -> list[int]:
     return result
 
 
+def _parse_scramble_steps_spec(value: Any) -> int | tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise SystemExit("procgen scramble_steps must be an integer or range.")
+    if isinstance(value, (int, float)):
+        steps = int(value)
+        if steps < 1:
+            raise SystemExit("procgen scramble_steps must be >= 1.")
+        return steps
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise SystemExit(
+                "procgen scramble_steps ranges must contain exactly 2 values."
+            )
+        low = int(value[0])
+        high = int(value[1])
+        if low < 1 or high < low:
+            raise SystemExit(
+                "procgen scramble_steps range must satisfy 1 <= low <= high."
+            )
+        return (low, high)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return None
+        if text.endswith("+") and text[:-1].isdigit():
+            low = int(text[:-1])
+            if low < 1:
+                raise SystemExit("procgen scramble_steps lower bound must be >= 1.")
+            return (low, low + _PROCGEN_PLUS_SCRAMBLE_SPAN)
+        if "-" in text:
+            parts = text.split("-", 1)
+            if (
+                len(parts) == 2
+                and parts[0].strip().isdigit()
+                and parts[1].strip().isdigit()
+            ):
+                low = int(parts[0].strip())
+                high = int(parts[1].strip())
+                if low < 1 or high < low:
+                    raise SystemExit(
+                        "procgen scramble_steps range must satisfy 1 <= low <= high."
+                    )
+                return (low, high)
+        if text.isdigit():
+            steps = int(text)
+            if steps < 1:
+                raise SystemExit("procgen scramble_steps must be >= 1.")
+            return steps
+    raise SystemExit(
+        "procgen scramble_steps must be an int, [low, high], 'low-high', or 'low+'."
+    )
+
+
+def _scramble_steps_to_json_value(value: int | tuple[int, int] | None) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, tuple):
+        return [int(value[0]), int(value[1])]
+    return int(value)
+
+
+def _sample_scramble_steps(
+    value: int | tuple[int, int] | None, *, rng: random.Random
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, tuple):
+        return int(rng.randint(int(value[0]), int(value[1])))
+    return int(value)
+
+
+def _validate_procgen_wall_density(value: float) -> float:
+    if value < 0.0 or value > 0.35:
+        raise SystemExit("procgen wall density must be within [0.0, 0.35].")
+    return value
+
+
 def _as_float(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -298,6 +381,7 @@ def _dedupe_levels(levels: Iterable[SokobanLevel]) -> list[SokobanLevel]:
 def _resolve_procgen_spec(
     args: argparse.Namespace, config: dict[str, Any]
 ) -> dict[str, Any] | None:
+    procgen_cases_config = config.get("procgen_cases")
     procgen_grid_sizes_arg = getattr(args, "procgen_grid_sizes", None)
     procgen_box_counts_arg = getattr(args, "procgen_box_counts", None)
 
@@ -311,6 +395,121 @@ def _resolve_procgen_spec(
         if procgen_box_counts_arg is not None
         else _parse_int_list(config.get("procgen_box_counts", []) or [])
     )
+
+    if procgen_cases_config is not None and (
+        procgen_grid_sizes_arg is not None
+        or procgen_box_counts_arg is not None
+        or procgen_grid_sizes
+        or procgen_box_counts
+    ):
+        raise SystemExit(
+            "Do not mix procgen_cases with procgen_grid_sizes/procgen_box_counts."
+        )
+
+    levels_per_combo_arg = getattr(args, "procgen_levels_per_combo", None)
+    levels_per_combo_default = (
+        int(levels_per_combo_arg)
+        if levels_per_combo_arg is not None
+        else int(config.get("procgen_levels_per_combo", 1))
+    )
+    if levels_per_combo_default < 1:
+        raise SystemExit("procgen_levels_per_combo must be >= 1")
+
+    procgen_seed_arg = getattr(args, "procgen_seed", None)
+    procgen_seed = (
+        int(procgen_seed_arg)
+        if procgen_seed_arg is not None
+        else config.get("procgen_seed", 0)
+    )
+    if procgen_seed is not None:
+        procgen_seed = int(procgen_seed)
+
+    procgen_wall_density_arg = getattr(args, "procgen_wall_density", None)
+    procgen_wall_density_default = (
+        float(procgen_wall_density_arg)
+        if procgen_wall_density_arg is not None
+        else float(config.get("procgen_wall_density", 0.08))
+    )
+    procgen_wall_density_default = _validate_procgen_wall_density(
+        procgen_wall_density_default
+    )
+
+    procgen_scramble_steps_arg = getattr(args, "procgen_scramble_steps", None)
+    procgen_scramble_steps_raw = (
+        procgen_scramble_steps_arg
+        if procgen_scramble_steps_arg is not None
+        else config.get("procgen_scramble_steps")
+    )
+    procgen_scramble_steps_default = _parse_scramble_steps_spec(
+        procgen_scramble_steps_raw
+    )
+
+    if procgen_cases_config is not None:
+        if not isinstance(procgen_cases_config, list):
+            raise SystemExit("procgen_cases must be a list of case objects.")
+        if not procgen_cases_config:
+            raise SystemExit("procgen_cases cannot be empty.")
+
+        parsed_cases: list[dict[str, Any]] = []
+        seen_cases: set[tuple[Any, ...]] = set()
+        for case_index, raw_case in enumerate(procgen_cases_config):
+            if not isinstance(raw_case, dict):
+                raise SystemExit(
+                    f"procgen_cases[{case_index}] must be an object with "
+                    "'grid_size' and 'box_count'."
+                )
+            if "grid_size" not in raw_case or "box_count" not in raw_case:
+                raise SystemExit(
+                    f"procgen_cases[{case_index}] must include 'grid_size' and "
+                    "'box_count'."
+                )
+
+            width, height = parse_grid_size(str(raw_case["grid_size"]))
+            n_boxes = int(raw_case["box_count"])
+            if n_boxes < 1:
+                raise SystemExit("procgen case box_count must be >= 1")
+
+            case_levels_per_combo = int(
+                raw_case.get("levels_per_combo", levels_per_combo_default)
+            )
+            if case_levels_per_combo < 1:
+                raise SystemExit("procgen case levels_per_combo must be >= 1")
+
+            case_wall_density = _validate_procgen_wall_density(
+                float(raw_case.get("wall_density", procgen_wall_density_default))
+            )
+            if "scramble_steps" in raw_case:
+                case_scramble_steps = _parse_scramble_steps_spec(
+                    raw_case.get("scramble_steps")
+                )
+            else:
+                case_scramble_steps = procgen_scramble_steps_default
+
+            case_key = (
+                width,
+                height,
+                n_boxes,
+                case_levels_per_combo,
+                case_wall_density,
+                case_scramble_steps,
+            )
+            if case_key in seen_cases:
+                continue
+            seen_cases.add(case_key)
+            parsed_cases.append(
+                {
+                    "grid_size": (width, height),
+                    "box_count": n_boxes,
+                    "levels_per_combo": case_levels_per_combo,
+                    "wall_density": case_wall_density,
+                    "scramble_steps": case_scramble_steps,
+                }
+            )
+        return {
+            "mode": "cases",
+            "cases": parsed_cases,
+            "seed": procgen_seed,
+        }
 
     if not procgen_grid_sizes and not procgen_box_counts:
         return None
@@ -336,83 +535,80 @@ def _resolve_procgen_spec(
             seen_box_counts.add(n_boxes)
             box_counts.append(n_boxes)
 
-    levels_per_combo_arg = getattr(args, "procgen_levels_per_combo", None)
-    levels_per_combo = (
-        int(levels_per_combo_arg)
-        if levels_per_combo_arg is not None
-        else int(config.get("procgen_levels_per_combo", 1))
-    )
-    if levels_per_combo < 1:
-        raise SystemExit("procgen_levels_per_combo must be >= 1")
-
-    procgen_seed_arg = getattr(args, "procgen_seed", None)
-    procgen_seed = (
-        int(procgen_seed_arg)
-        if procgen_seed_arg is not None
-        else config.get("procgen_seed", 0)
-    )
-    if procgen_seed is not None:
-        procgen_seed = int(procgen_seed)
-
-    procgen_wall_density_arg = getattr(args, "procgen_wall_density", None)
-    procgen_wall_density = (
-        float(procgen_wall_density_arg)
-        if procgen_wall_density_arg is not None
-        else float(config.get("procgen_wall_density", 0.08))
-    )
-
-    procgen_scramble_steps_arg = getattr(args, "procgen_scramble_steps", None)
-    procgen_scramble_steps = (
-        int(procgen_scramble_steps_arg)
-        if procgen_scramble_steps_arg is not None
-        else config.get("procgen_scramble_steps")
-    )
-    if procgen_scramble_steps is not None:
-        procgen_scramble_steps = int(procgen_scramble_steps)
-        if procgen_scramble_steps < 1:
-            raise SystemExit("procgen_scramble_steps must be >= 1")
+    cases: list[dict[str, Any]] = []
+    for width, height in grid_sizes:
+        for n_boxes in box_counts:
+            cases.append(
+                {
+                    "grid_size": (width, height),
+                    "box_count": n_boxes,
+                    "levels_per_combo": levels_per_combo_default,
+                    "wall_density": procgen_wall_density_default,
+                    "scramble_steps": procgen_scramble_steps_default,
+                }
+            )
 
     return {
-        "grid_sizes": grid_sizes,
-        "box_counts": box_counts,
-        "levels_per_combo": levels_per_combo,
+        "mode": "grid_box_product",
+        "cases": cases,
         "seed": procgen_seed,
-        "wall_density": procgen_wall_density,
-        "scramble_steps": procgen_scramble_steps,
     }
 
 
 def _select_procgen_levels(spec: dict[str, Any]) -> list[SokobanLevel]:
     levels: list[SokobanLevel] = []
-    combo_idx = 0
-    for width, height in spec["grid_sizes"]:
-        for n_boxes in spec["box_counts"]:
-            combo_seed = spec["seed"]
-            if combo_seed is not None:
-                combo_seed = int(combo_seed) + (combo_idx * 10_000)
-            level_id_prefix = (
-                f"procgen:{width}x{height}:b{n_boxes}:s"
-                f"{combo_seed if combo_seed is not None else 'random'}"
+    for combo_idx, case in enumerate(spec["cases"]):
+        width, height = case["grid_size"]
+        n_boxes = int(case["box_count"])
+        levels_per_combo = int(case["levels_per_combo"])
+        wall_density = float(case["wall_density"])
+        scramble_steps_spec = case["scramble_steps"]
+
+        combo_seed = spec["seed"]
+        if combo_seed is not None:
+            combo_seed = int(combo_seed) + (combo_idx * 10_000)
+
+        scramble_label = _scramble_steps_to_json_value(scramble_steps_spec)
+        if scramble_label is None:
+            scramble_tag = "default"
+        elif isinstance(scramble_label, list):
+            scramble_tag = f"{scramble_label[0]}-{scramble_label[1]}"
+        else:
+            scramble_tag = str(scramble_label)
+        level_id_prefix = (
+            f"procgen:{width}x{height}:b{n_boxes}:sc{scramble_tag}:s"
+            f"{combo_seed if combo_seed is not None else 'random'}"
+        )
+        combo_rng = random.Random(combo_seed)
+
+        for level_idx in range(levels_per_combo):
+            level_seed = None if combo_seed is None else int(combo_seed) + level_idx
+            scramble_steps = _sample_scramble_steps(
+                scramble_steps_spec,
+                rng=combo_rng,
             )
             try:
-                levels.extend(
-                    generate_procedural_levels(
+                levels.append(
+                    generate_procedural_level(
                         width=width,
                         height=height,
                         n_boxes=n_boxes,
-                        count=spec["levels_per_combo"],
-                        seed=combo_seed,
-                        wall_density=spec["wall_density"],
-                        scramble_steps=spec["scramble_steps"],
-                        level_id_prefix=level_id_prefix,
+                        seed=level_seed,
+                        level_id=f"{level_id_prefix}:i{level_idx + 1}",
+                        title=(
+                            f"Procedural {width}x{height} ({n_boxes} boxes) "
+                            f"#{level_idx + 1}"
+                        ),
+                        wall_density=wall_density,
+                        scramble_steps=scramble_steps,
                     )
                 )
             except (RuntimeError, ValueError) as exc:
                 raise SystemExit(
                     "Failed to generate procedural Sokoban levels for "
-                    f"{width}x{height}, n_boxes={n_boxes}: {exc}"
+                    f"{width}x{height}, n_boxes={n_boxes}, "
+                    f"scramble={scramble_tag}: {exc}"
                 ) from exc
-            combo_idx += 1
     return _dedupe_levels(levels)
 
 
@@ -970,6 +1166,37 @@ def run_batch(
             for variant in selected_tool_variants
         }
 
+        procgen_payload: dict[str, Any]
+        if procgen_spec is None:
+            procgen_payload = {"enabled": False}
+        else:
+            procgen_cases_payload = [
+                {
+                    "grid_size": f"{case['grid_size'][0]}x{case['grid_size'][1]}",
+                    "box_count": int(case["box_count"]),
+                    "levels_per_combo": int(case["levels_per_combo"]),
+                    "wall_density": float(case["wall_density"]),
+                    "scramble_steps": _scramble_steps_to_json_value(
+                        case["scramble_steps"]
+                    ),
+                }
+                for case in procgen_spec["cases"]
+            ]
+            grid_sizes = list(
+                dict.fromkeys(case["grid_size"] for case in procgen_spec["cases"])
+            )
+            box_counts = list(
+                dict.fromkeys(int(case["box_count"]) for case in procgen_spec["cases"])
+            )
+            procgen_payload = {
+                "enabled": True,
+                "mode": procgen_spec.get("mode", "grid_box_product"),
+                "grid_sizes": [f"{width}x{height}" for width, height in grid_sizes],
+                "box_counts": box_counts,
+                "seed": procgen_spec["seed"],
+                "cases": procgen_cases_payload,
+            }
+
         run_config = {
             "run_id": run_id,
             "timestamp": timestamp,
@@ -978,22 +1205,7 @@ def run_batch(
             "model": model_name,
             "level_ids": [level.level_id for level in levels],
             "level_source": "procgen" if procgen_spec is not None else "bundled",
-            "procgen": (
-                {
-                    "enabled": True,
-                    "grid_sizes": [
-                        f"{width}x{height}"
-                        for width, height in procgen_spec["grid_sizes"]
-                    ],
-                    "box_counts": list(procgen_spec["box_counts"]),
-                    "levels_per_combo": procgen_spec["levels_per_combo"],
-                    "seed": procgen_spec["seed"],
-                    "wall_density": procgen_spec["wall_density"],
-                    "scramble_steps": procgen_spec["scramble_steps"],
-                }
-                if procgen_spec is not None
-                else {"enabled": False}
-            ),
+            "procgen": procgen_payload,
             "runs_per_level": runs_per_level,
             "max_turns": max_turns,
             "prompt_variants": [asdict(v) for v in selected_prompt_variants],

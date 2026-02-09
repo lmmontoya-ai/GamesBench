@@ -109,7 +109,10 @@ Batch config precedence:
 - Per-game keys under `"games"`:
   - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`
   - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
-  - Sokoban (procedural): `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`, `procgen_seed`, `procgen_wall_density`, `procgen_scramble_steps`, plus standard run keys (`runs_per_level`, `prompt_variants`, etc.)
+  - Sokoban (procedural):
+    - cross-product mode: `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`
+    - case mode: `procgen_cases` entries with `grid_size`, `box_count`, optional `levels_per_combo`, `wall_density`, `scramble_steps` (int, `[min,max]`, `"min-max"`, or `"min+"`)
+    - shared controls: `procgen_seed` plus standard run keys (`runs_per_level`, `prompt_variants`, etc.)
 
 Sokoban level-source rules:
 
