@@ -219,6 +219,20 @@ def run_tool_calling_episode(
             {"type": "tool_call", "name": call.name, "arguments": call.arguments}
         )
         events.append({"type": "tool_result", "result": tool_result, "meta": tool_meta})
+        if bool(tool_meta.get("terminate_episode")):
+            terminated_early = True
+            termination_reason = str(
+                tool_meta.get("termination_reason", "adapter_requested")
+            )
+            events.append(
+                {
+                    "type": "early_stop",
+                    "reason": termination_reason,
+                    "stagnation_turns": stagnation_turns,
+                    "deadlock_turns": deadlock_turns,
+                }
+            )
+            break
 
     return EpisodeResult(
         solved=adapter.is_solved(),

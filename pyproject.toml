@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "games-bench"
 version = "0.1.0"
@@ -17,3 +21,15 @@ games-bench = "games_bench.bench.cli:main"
 dev = ["black==24.1.1", "pre-commit"]
 llm = ["openai>=2.16.0"]
 viz = ["pillow"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["games_bench*"]
+exclude = ["tests*", "apps*", "configs*", "artifacts*", "renders*", "reviews*"]
+
+[tool.setuptools.package-data]
+"games_bench.games.hanoi.prompts" = ["*.txt"]
+"games_bench.games.sokoban.prompts" = ["*.txt"]
+"games_bench.games.sokoban.levels" = ["*.json", "*.xsb"]

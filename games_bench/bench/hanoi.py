@@ -223,6 +223,19 @@ def _build_provider(
     raise SystemExit(f"Unknown provider: {args.provider}")
 
 
+def _parse_str_list(values: Iterable[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            result.extend(_parse_str_list(value))
+            continue
+        for chunk in str(value).split(","):
+            chunk = chunk.strip()
+            if chunk:
+                result.append(chunk)
+    return result
+
+
 def _parse_int_list(values: Iterable[str]) -> list[int]:
     result: list[int] = []
     for value in values:
@@ -1144,26 +1157,49 @@ def run_batch(
         else DEFAULT_PROMPT_VARIANTS
     )
 
-    selected_prompt_names = getattr(args, "prompt_variants", None) or config.get(
+    selected_prompt_names_raw = getattr(args, "prompt_variants", None) or config.get(
         "prompt_variants", ["minimal"]
     )
+    selected_prompt_names = _parse_str_list([selected_prompt_names_raw])
+    if not selected_prompt_names:
+        raise SystemExit("No Hanoi prompt variants selected.")
+    unknown_prompt_variants = [
+        name for name in selected_prompt_names if name not in prompt_variants
+    ]
+    if unknown_prompt_variants:
+        raise SystemExit(
+            "Unknown Hanoi prompt variant(s): "
+            + ", ".join(sorted(set(unknown_prompt_variants)))
+        )
     selected_prompt_variants = [prompt_variants[name] for name in selected_prompt_names]
     tool_variants = DEFAULT_TOOL_VARIANTS
-    selected_tool_names = getattr(args, "tool_variants", None) or config.get(
+    selected_tool_names_raw = getattr(args, "tool_variants", None) or config.get(
         "tool_variants", ["move_only"]
     )
+    selected_tool_names = _parse_str_list([selected_tool_names_raw])
+    if not selected_tool_names:
+        raise SystemExit("No Hanoi tool variants selected.")
+    unknown_tool_variants = [
+        name for name in selected_tool_names if name not in tool_variants
+    ]
+    if unknown_tool_variants:
+        raise SystemExit(
+            "Unknown Hanoi tool variant(s): "
+            + ", ".join(sorted(set(unknown_tool_variants)))
+        )
     selected_tool_variants = [tool_variants[name] for name in selected_tool_names]
 
     allowed_tools_override = getattr(args, "allowed_tools", None) or config.get(
         "allowed_tools"
     )
     if allowed_tools_override:
+        allowed_tools = _parse_str_list([allowed_tools_override])
+        if not allowed_tools:
+            raise SystemExit("allowed_tools override must include at least one tool.")
         selected_tool_variants = [
             ToolVariant(
                 name="custom",
-                allowed_tools=[
-                    t.strip() for t in allowed_tools_override.split(",") if t.strip()
-                ],
+                allowed_tools=allowed_tools,
             )
         ]
 

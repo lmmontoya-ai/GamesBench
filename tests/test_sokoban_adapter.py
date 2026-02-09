@@ -102,6 +102,22 @@ class TestSokobanGameAdapter(unittest.TestCase):
         self.assertTrue(illegal.meta["illegal_action"])
         self.assertFalse(illegal.meta["counts_as_move"])
 
+    def test_move_tool_requests_termination_on_terminal_deadlock(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$ #
+#  .#
+#####
+"""
+        )
+        env = SokobanEnv(level, detect_deadlocks=True, terminal_on_deadlock=True)
+        adapter = SokobanGameAdapter(env)
+        execution = adapter.execute_tool("sokoban_move", {"direction": "right"})
+        self.assertTrue(execution.result["ok"])
+        self.assertTrue(execution.result["deadlocked"])
+        self.assertTrue(execution.meta["terminate_episode"])
+        self.assertEqual(execution.meta["termination_reason"], "deadlock_terminal")
+
     def test_undo_tool_meta_success_and_failure(self) -> None:
         level = _level_from_xsb(
             """######
@@ -280,6 +296,34 @@ class TestSokobanGameAdapter(unittest.TestCase):
         self.assertTrue(result.solved)
         self.assertEqual(result.tool_calls, 2)
         self.assertEqual(result.illegal_moves, 0)
+
+    def test_harness_stops_immediately_on_terminal_deadlock_move(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$ #
+#  .#
+#####
+"""
+        )
+        env = SokobanEnv(level, detect_deadlocks=True, terminal_on_deadlock=True)
+        adapter = SokobanGameAdapter(env)
+        provider = _ScriptedProvider(
+            [
+                ProviderResult(
+                    tool_calls=[ToolCall("sokoban_move", {"direction": "right"})],
+                    raw={},
+                ),
+                ProviderResult(
+                    tool_calls=[ToolCall("sokoban_get_state", {})],
+                    raw={},
+                ),
+            ]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=5)
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock_terminal")
+        self.assertEqual(result.tool_calls, 1)
 
 
 if __name__ == "__main__":

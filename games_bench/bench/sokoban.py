@@ -278,9 +278,12 @@ def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
     return path / game_name
 
 
-def _parse_str_list(values: Iterable[str]) -> list[str]:
+def _parse_str_list(values: Iterable[Any]) -> list[str]:
     result: list[str] = []
     for value in values:
+        if isinstance(value, (list, tuple, set)):
+            result.extend(_parse_str_list(value))
+            continue
         for chunk in str(value).split(","):
             chunk = chunk.strip()
             if chunk:
@@ -1364,8 +1367,11 @@ def run_batch(
     )
 
     prompt_variants = DEFAULT_PROMPT_VARIANTS
-    selected_prompt_names = getattr(args, "prompt_variants", None) or config.get(
-        "prompt_variants", ["minimal"]
+    selected_prompt_names = _parse_str_list(
+        [
+            getattr(args, "prompt_variants", None)
+            or config.get("prompt_variants", ["minimal"])
+        ]
     )
     if not selected_prompt_names:
         raise SystemExit("No prompt variants selected.")
@@ -1380,8 +1386,11 @@ def run_batch(
     selected_prompt_variants = [prompt_variants[name] for name in selected_prompt_names]
 
     tool_variants = DEFAULT_TOOL_VARIANTS
-    selected_tool_names = getattr(args, "tool_variants", None) or config.get(
-        "tool_variants", ["move_only"]
+    selected_tool_names = _parse_str_list(
+        [
+            getattr(args, "tool_variants", None)
+            or config.get("tool_variants", ["move_only"])
+        ]
     )
     if not selected_tool_names:
         raise SystemExit("No tool variants selected.")
@@ -1399,10 +1408,13 @@ def run_batch(
         "allowed_tools"
     )
     if allowed_tools_override:
+        allowed_tools = _parse_str_list([allowed_tools_override])
+        if not allowed_tools:
+            raise SystemExit("allowed_tools override must include at least one tool.")
         selected_tool_variants = [
             ToolVariant(
                 name="custom",
-                allowed_tools=_parse_str_list([allowed_tools_override]),
+                allowed_tools=allowed_tools,
                 terminal_on_deadlock_override=None,
             )
         ]

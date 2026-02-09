@@ -203,6 +203,36 @@ class TestHarness(unittest.TestCase):
             any(event.get("type") == "early_stop" for event in result.events)
         )
 
+    def test_stops_early_on_adapter_requested_termination(self) -> None:
+        adapter = DummyAdapter()
+
+        def terminate_tool(_name: str, _arguments: dict[str, Any]) -> ToolExecution:
+            return ToolExecution(
+                result={"ok": True},
+                meta={
+                    "state_mutating": False,
+                    "illegal_action": False,
+                    "terminate_episode": True,
+                    "termination_reason": "deadlock_terminal",
+                },
+            )
+
+        adapter.execute_tool = terminate_tool  # type: ignore[method-assign]
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={}),
+                ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={}),
+            ]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=5)
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock_terminal")
+        self.assertEqual(result.tool_calls, 1)
+        self.assertTrue(
+            any(event.get("type") == "early_stop" for event in result.events)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
