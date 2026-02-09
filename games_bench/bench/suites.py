@@ -48,13 +48,17 @@ def _standard_v1_config() -> dict[str, Any]:
         "games": {
             "hanoi": {
                 # Exact difficulty ladder (no cartesian product):
-                # (3,3), (3,4), (3,5), (4,4), (5,4)
+                # (3,3), (3,4), (3,5), (3,10), (3,20), (4,4), (4,5), (4,10), (4,20)
                 "cases": [
                     {"n_pegs": 3, "n_disks": 3},
                     {"n_pegs": 3, "n_disks": 4},
                     {"n_pegs": 3, "n_disks": 5},
                     {"n_pegs": 4, "n_disks": 4},
-                    {"n_pegs": 5, "n_disks": 4},
+                    {"n_pegs": 3, "n_disks": 10},
+                    {"n_pegs": 3, "n_disks": 20},
+                    {"n_pegs": 4, "n_disks": 5},
+                    {"n_pegs": 4, "n_disks": 10},
+                    {"n_pegs": 4, "n_disks": 20},
                 ],
                 "runs_per_variant": 5,
                 "max_turns": 400,
@@ -63,13 +67,35 @@ def _standard_v1_config() -> dict[str, Any]:
                 "state_format": "text",
             },
             "sokoban": {
-                # Deterministic procedural grid/box ladder.
-                "procgen_grid_sizes": ["8x8", "10x10"],
-                "procgen_box_counts": [2, 3],
-                "procgen_levels_per_combo": 3,
+                # Deterministic procedural long-horizon ladder.
+                "procgen_cases": [
+                    {
+                        "grid_size": "8x8",
+                        "box_count": 6,
+                        "scramble_steps": [140, 180],
+                        "levels_per_combo": 3,
+                    },
+                    {
+                        "grid_size": "10x10",
+                        "box_count": 6,
+                        "scramble_steps": [220, 260],
+                        "levels_per_combo": 3,
+                    },
+                    {
+                        "grid_size": "10x10",
+                        "box_count": 7,
+                        "scramble_steps": [220, 260],
+                        "levels_per_combo": 3,
+                    },
+                    {
+                        "grid_size": "12x12",
+                        "box_count": 8,
+                        "scramble_steps": "300+",
+                        "levels_per_combo": 3,
+                    },
+                ],
                 "procgen_seed": 2026,
                 "procgen_wall_density": 0.08,
-                "procgen_scramble_steps": 40,
                 "max_levels": None,
                 "runs_per_level": 3,
                 "max_turns": 400,
