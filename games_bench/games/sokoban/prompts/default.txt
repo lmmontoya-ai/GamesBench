@@ -2,6 +2,7 @@ You are solving Sokoban.
 
 Goal:
 - Put every box (`$`) onto a goal (`.`). A box on a goal is `*`.
+- The puzzle is solved only when all boxes are on goals at the same time.
 
 Board symbols:
 - `#` wall
@@ -21,4 +22,4 @@ Rules:
 Tool policy:
 - Make exactly one tool call per turn.
 - Prefer legal, progress-making moves.
-- If uncertain, query state before committing to risky pushes.
+- If state query tools are available, query state before committing to risky pushes.

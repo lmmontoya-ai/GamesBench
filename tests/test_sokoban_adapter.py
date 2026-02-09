@@ -44,6 +44,8 @@ class TestSokobanPrompts(unittest.TestCase):
         minimal = instructions_for_variant("minimal")
         self.assertEqual(minimal, default_instructions())
         self.assertIn("exactly one tool call", minimal)
+        self.assertIn("all boxes are on goals at the same time", minimal)
+        self.assertIn("If state query tools are available", minimal)
         for symbol in ("`#`", "` `", "`@`", "`+`", "`$`", "`*`", "`.`"):
             self.assertIn(symbol, minimal)
 
@@ -68,6 +70,7 @@ class TestSokobanPrompts(unittest.TestCase):
         self.assertEqual(with_image, with_image_instructions(with_image))
         self.assertIn("dark gray tiles = walls", with_image)
         self.assertIn("blue token = player on goal", with_image)
+        self.assertIn("If both text state and image are provided", with_image)
 
     def test_prompt_variant_respects_custom_tool_prefix(self) -> None:
         legal = instructions_for_variant("with_legal_moves", tool_prefix="custom")
