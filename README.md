@@ -53,6 +53,7 @@ Run config-driven mode (multi-game capable):
 Run canonical benchmark suite:
 
 - List suites: `uv run games-bench run --list-suites`
+- Run easy suite (small-model-friendly): `uv run games-bench run --provider openrouter --model google/gemini-2.5-flash --suite easy-v1`
 - Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
 - Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
 - Override throughput on the CLI: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --parallelism 4 --max-inflight-provider 4`
@@ -133,6 +134,7 @@ See examples:
 - `configs/hanoi.json`
 - `configs/sokoban.json`
 - `configs/sokoban_procgen.json`
+- `configs/easy_v1.json`
 - `configs/standard_v1.json`
 - `configs/models_openrouter.example.json`
 
@@ -206,4 +208,5 @@ state, reward, done, info = env.step("right")
 ## Notes
 
 - Layering and registry contracts are documented in `AGENTS.md`.
+- Suite authoring rules are documented in `easy_spec_guideline.md` and `standard_spec_guidelines.md`.
 - Development plan and phase details are in `development_design.md`.

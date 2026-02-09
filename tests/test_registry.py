@@ -67,15 +67,17 @@ class TestRegistry(unittest.TestCase):
         with self.assertRaises(KeyError):
             get_suite("__unknown_suite__")
 
-    def test_suite_registry_loads_standard_suite(self) -> None:
+    def test_suite_registry_loads_builtin_suites(self) -> None:
         load_builtin_suites()
+        self.assertIn("easy-v1", list_suites())
         self.assertIn("standard-v1", list_suites())
-        suite = get_suite("standard-v1")
-        self.assertEqual(suite.name, "standard-v1")
-        config_a = suite.config_factory()
-        config_b = suite.config_factory()
-        self.assertEqual(config_a, config_b)
-        self.assertIsNot(config_a, config_b)
+        for name in ("easy-v1", "standard-v1"):
+            suite = get_suite(name)
+            self.assertEqual(suite.name, name)
+            config_a = suite.config_factory()
+            config_b = suite.config_factory()
+            self.assertEqual(config_a, config_b)
+            self.assertIsNot(config_a, config_b)
 
 
 if __name__ == "__main__":

@@ -91,7 +91,55 @@ class TestBatchCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(stdout.getvalue())
         names = {entry["name"] for entry in payload["suites"]}
+        self.assertIn("easy-v1", names)
         self.assertIn("standard-v1", names)
+
+    def test_suite_easy_v1_applies_hanoi_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--suite",
+                        "easy-v1",
+                        "--game",
+                        "hanoi",
+                        "--max-turns",
+                        "1",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+            run_dir = Path(payload["run_dirs"][0])
+            run_config = json.loads((run_dir / "run_config.json").read_text())
+            expected_cases = {
+                (3, 2),
+                (3, 3),
+                (3, 4),
+                (3, 5),
+                (4, 4),
+                (4, 5),
+            }
+            self.assertEqual(len(run_config["cases"]), len(expected_cases))
+            actual_cases = {
+                (int(case["n_pegs"]), int(case["n_disks"]))
+                for case in run_config["cases"]
+            }
+            self.assertEqual(actual_cases, expected_cases)
+            self.assertEqual(run_config["runs_per_variant"], 3)
+            episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
+            self.assertEqual(len(episodes), 18)
 
     def test_suite_standard_v1_applies_hanoi_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

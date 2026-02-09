@@ -1,0 +1,50 @@
+{
+  "out_dir": "artifacts/runs",
+  "record": true,
+  "record_raw": false,
+  "record_provider_raw": false,
+  "provider_retries": 2,
+  "provider_backoff": 1.0,
+  "stream_debug": false,
+  "parallelism": 2,
+  "max_inflight_provider": 2,
+  "games": {
+    "hanoi": {
+      "cases": [
+        {"n_pegs": 3, "n_disks": 2},
+        {"n_pegs": 3, "n_disks": 3},
+        {"n_pegs": 3, "n_disks": 4},
+        {"n_pegs": 3, "n_disks": 5},
+        {"n_pegs": 4, "n_disks": 4},
+        {"n_pegs": 4, "n_disks": 5}
+      ],
+      "runs_per_variant": 3,
+      "max_turns": 200,
+      "stagnation_patience": 20,
+      "optimal_turn_cap_multiplier": 4.0,
+      "prompt_variants": ["full"],
+      "tool_variants": ["move_and_state"],
+      "state_format": "text"
+    },
+    "sokoban": {
+      "procgen_cases": [
+        {"grid_size": "8x8", "box_count": 2, "scramble_steps": [24, 32], "levels_per_combo": 4},
+        {"grid_size": "8x8", "box_count": 3, "scramble_steps": [36, 48], "levels_per_combo": 4},
+        {"grid_size": "10x10", "box_count": 3, "scramble_steps": [50, 70], "levels_per_combo": 3},
+        {"grid_size": "10x10", "box_count": 4, "scramble_steps": [70, 90], "levels_per_combo": 3}
+      ],
+      "procgen_seed": 2026,
+      "procgen_wall_density": 0.08,
+      "max_levels": null,
+      "runs_per_level": 2,
+      "max_turns": 300,
+      "stagnation_patience": 40,
+      "deadlock_patience": 6,
+      "prompt_variants": ["full"],
+      "tool_variants": ["move_and_query"],
+      "state_format": "text",
+      "detect_deadlocks": true,
+      "terminal_on_deadlock": true
+    }
+  }
+}
