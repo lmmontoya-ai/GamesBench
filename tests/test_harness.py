@@ -253,6 +253,52 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(result.tool_calls, 0)
         self.assertEqual(provider.calls, 0)
 
+    def test_infers_terminal_deadlock_check_from_adapter_env(self) -> None:
+        adapter = DummyAdapter()
+
+        class _DeadlockEnv:
+            detect_deadlocks = True
+            terminal_on_deadlock = True
+
+            def is_deadlocked(self) -> bool:
+                return True
+
+        adapter.env = _DeadlockEnv()  # type: ignore[attr-defined]
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=5)
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock_terminal")
+        self.assertEqual(result.tool_calls, 0)
+        self.assertEqual(provider.calls, 0)
+
+    def test_explicitly_disables_inferred_deadlock_termination(self) -> None:
+        adapter = DummyAdapter()
+
+        class _DeadlockEnv:
+            detect_deadlocks = True
+            terminal_on_deadlock = True
+
+            def is_deadlocked(self) -> bool:
+                return True
+
+        adapter.env = _DeadlockEnv()  # type: ignore[attr-defined]
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_noop", {})], raw={})]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=1,
+            deadlock_terminate_on_check=False,
+        )
+        self.assertFalse(result.terminated_early)
+        self.assertIsNone(result.termination_reason)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(provider.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
