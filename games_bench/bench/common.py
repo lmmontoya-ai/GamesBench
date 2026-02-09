@@ -44,6 +44,19 @@ def add_common_batch_arguments(
             "Use --no-stream-debug to force disable."
         ),
     )
+    parser.add_argument(
+        "--suite",
+        default=None,
+        help=(
+            "Named benchmark suite (for example: standard-v1). "
+            "Suite config is merged before --config overrides."
+        ),
+    )
+    parser.add_argument(
+        "--list-suites",
+        action="store_true",
+        help="List available benchmark suites and exit.",
+    )
     parser.add_argument("--cli-cmd", help="Command to run for provider=cli.")
     parser.add_argument(
         "--no-stdin",

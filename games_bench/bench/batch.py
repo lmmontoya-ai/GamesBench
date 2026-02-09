@@ -11,6 +11,7 @@ from games_bench.bench.registry import (
     list_benchmarks,
     load_builtin_benchmarks,
 )
+from games_bench.bench.suites import get_suite, iter_suites, load_builtin_suites
 from games_bench.config import load_config, merge_dicts, normalize_games_config
 
 
@@ -30,6 +31,26 @@ def _require_provider(
         parser.error("--provider is required")
 
 
+def _print_suites() -> None:
+    suites = [
+        {"name": spec.name, "description": spec.description} for spec in iter_suites()
+    ]
+    print(json.dumps({"suites": suites}, indent=2))
+
+
+def _resolve_config(args: argparse.Namespace) -> dict[str, Any]:
+    suite_name = getattr(args, "suite", None)
+    suite_config: dict[str, Any] = {}
+    if suite_name:
+        try:
+            suite = get_suite(suite_name)
+        except KeyError as exc:
+            raise SystemExit(str(exc)) from exc
+        suite_config = suite.config_factory()
+    file_config = load_config(args.config) if args.config else {}
+    return merge_dicts(suite_config, file_config)
+
+
 def _run_single_game(
     game_name: str,
     argv: list[str],
@@ -42,9 +63,12 @@ def _run_single_game(
     if benchmark.add_arguments:
         benchmark.add_arguments(parser)
     args = parser.parse_args(argv)
+    if args.list_suites:
+        _print_suites()
+        return []
     _require_provider(args, parser)
 
-    config = load_config(args.config) if args.config else {}
+    config = _resolve_config(args)
     global_defaults, games_map = normalize_games_config(config, default_game=game_name)
     bench_defaults = benchmark.default_config() if benchmark.default_config else {}
     game_config = merge_dicts(
@@ -64,9 +88,12 @@ def _run_config_mode(argv: list[str]) -> list[str]:
     )
     add_common_batch_arguments(parser, include_game_filter=True)
     args = parser.parse_args(argv)
+    if args.list_suites:
+        _print_suites()
+        return []
     _require_provider(args, parser)
 
-    config = load_config(args.config) if args.config else {}
+    config = _resolve_config(args)
     global_defaults, games_map = normalize_games_config(config, default_game="hanoi")
     selected_games = _select_games(games_map, args.games)
     if not selected_games:
@@ -91,7 +118,11 @@ def _run_config_mode(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     load_builtin_benchmarks()
+    load_builtin_suites()
     args = list(sys.argv[1:] if argv is None else argv)
+    if "--list-suites" in args:
+        _print_suites()
+        return 0
     benchmark_names = set(list_benchmarks())
     if args and args[0] in benchmark_names:
         game_name = args.pop(0)

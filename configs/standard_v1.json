@@ -1,0 +1,41 @@
+{
+  "out_dir": "artifacts/runs",
+  "record": true,
+  "record_raw": false,
+  "record_provider_raw": false,
+  "provider_retries": 2,
+  "provider_backoff": 1.0,
+  "stream_debug": false,
+  "games": {
+    "hanoi": {
+      "cases": [
+        {"n_pegs": 3, "n_disks": 3},
+        {"n_pegs": 3, "n_disks": 4},
+        {"n_pegs": 3, "n_disks": 5},
+        {"n_pegs": 4, "n_disks": 4},
+        {"n_pegs": 5, "n_disks": 4}
+      ],
+      "runs_per_variant": 5,
+      "max_turns": 400,
+      "prompt_variants": ["full"],
+      "tool_variants": ["move_only"],
+      "state_format": "text"
+    },
+    "sokoban": {
+      "procgen_grid_sizes": ["8x8", "10x10"],
+      "procgen_box_counts": [2, 3],
+      "procgen_levels_per_combo": 3,
+      "procgen_seed": 2026,
+      "procgen_wall_density": 0.08,
+      "procgen_scramble_steps": 40,
+      "max_levels": null,
+      "runs_per_level": 3,
+      "max_turns": 400,
+      "prompt_variants": ["full"],
+      "tool_variants": ["move_and_query"],
+      "state_format": "text",
+      "detect_deadlocks": true,
+      "terminal_on_deadlock": true
+    }
+  }
+}
