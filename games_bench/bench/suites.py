@@ -38,6 +38,7 @@ def _easy_v1_config() -> dict[str, Any]:
     """Accessible cross-game suite for smaller-capability models."""
 
     return {
+        "spec": "easy-v1",
         "out_dir": "artifacts/runs",
         "record": True,
         "record_raw": False,
@@ -115,6 +116,7 @@ def _standard_v1_config() -> dict[str, Any]:
     """Canonical cross-game planning benchmark for reproducible model evals."""
 
     return {
+        "spec": "standard-v1",
         "out_dir": "artifacts/runs",
         "record": True,
         "record_raw": False,

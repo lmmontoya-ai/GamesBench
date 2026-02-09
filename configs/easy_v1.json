@@ -1,4 +1,5 @@
 {
+  "spec": "easy-v1",
   "out_dir": "artifacts/runs",
   "record": true,
   "record_raw": false,

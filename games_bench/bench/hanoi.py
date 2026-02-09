@@ -13,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from games_bench.bench.common import add_common_batch_arguments
+from games_bench.bench.common import (
+    add_common_batch_arguments,
+    resolve_interaction_mode,
+    resolve_spec_name,
+)
 from games_bench.games.hanoi.adapter import HanoiGameAdapter
 from games_bench.games.hanoi.env import TowerOfHanoiEnv, tool_schemas
 from games_bench.games.hanoi.prompts import (
@@ -135,6 +139,7 @@ DEFAULT_TOOL_VARIANTS = {
 
 def default_hanoi_config() -> dict[str, Any]:
     return {
+        "spec": "hanoi-default",
         "cases": None,
         "n_pegs": [3],
         "n_disks": [3],
@@ -768,6 +773,9 @@ def _run_hanoi_episode_job(
     provider: Any,
     provider_name: str,
     model_name: str,
+    spec_name: str,
+    interaction_mode: str,
+    stateless: bool,
     max_turns: int,
     optimal_turn_cap_multiplier: float | None,
     state_format: str,
@@ -843,6 +851,7 @@ def _run_hanoi_episode_job(
         allowed_tools=job.tool_variant.allowed_tools,
         record_provider_raw=record_provider_raw,
         stagnation_patience=stagnation_patience,
+        stateless=stateless,
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)
@@ -853,6 +862,9 @@ def _run_hanoi_episode_job(
         "run_idx": job.run_idx,
         "provider": provider_name,
         "model": model_name,
+        "spec": spec_name,
+        "interaction_mode": interaction_mode,
+        "stateless": stateless,
         "n_pegs": result.game_metrics.get("n_pegs", n_pegs),
         "n_disks": result.game_metrics.get("n_disks", n_disks),
         "start_peg": env.start_peg,
@@ -881,6 +893,9 @@ def _run_hanoi_episode_job(
                 "run_idx": job.run_idx,
                 "provider": provider_name,
                 "model": model_name,
+                "spec": spec_name,
+                "interaction_mode": interaction_mode,
+                "stateless": stateless,
                 "n_pegs": n_pegs,
                 "n_disks": n_disks,
                 "start_peg": start_peg,
@@ -1118,6 +1133,12 @@ def run_batch(
         config=config,
         provider_name=provider_name,
     )
+    stateless, interaction_mode = resolve_interaction_mode(args, config)
+    spec_base, spec_name = resolve_spec_name(
+        args,
+        config,
+        interaction_mode=interaction_mode,
+    )
     stagnation_patience = _resolve_optional_positive_int(
         getattr(args, "stagnation_patience", None),
         config,
@@ -1297,6 +1318,10 @@ def run_batch(
         run_config = {
             "run_id": run_id,
             "timestamp": timestamp,
+            "spec_base": spec_base,
+            "spec": spec_name,
+            "interaction_mode": interaction_mode,
+            "stateless": stateless,
             "game": game_name,
             "provider": provider_name,
             "model": model_name,
@@ -1386,6 +1411,9 @@ def run_batch(
                     provider=get_provider(),
                     provider_name=provider_name,
                     model_name=model_name,
+                    spec_name=spec_name,
+                    interaction_mode=interaction_mode,
+                    stateless=stateless,
                     max_turns=max_turns,
                     optimal_turn_cap_multiplier=optimal_turn_cap_multiplier,
                     state_format=state_format,
@@ -1429,7 +1457,14 @@ def run_batch(
                             )
                             next_episode_id += 1
 
-        summary = {"overall": _compute_metrics(episodes), "variants": {}}
+        summary = {
+            "spec_base": spec_base,
+            "spec": spec_name,
+            "interaction_mode": interaction_mode,
+            "stateless": stateless,
+            "overall": _compute_metrics(episodes),
+            "variants": {},
+        }
         for episode in episodes:
             variant_id = episode["variant_id"]
             summary["variants"].setdefault(variant_id, [])

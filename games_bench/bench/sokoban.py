@@ -13,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from games_bench.bench.common import add_common_batch_arguments
+from games_bench.bench.common import (
+    add_common_batch_arguments,
+    resolve_interaction_mode,
+    resolve_spec_name,
+)
 from games_bench.config import load_config, merge_dicts, normalize_games_config
 from games_bench.games.sokoban.adapter import SokobanGameAdapter
 from games_bench.games.sokoban.env import SokobanEnv, SokobanLevel, tool_schemas
@@ -149,6 +153,7 @@ _PROCGEN_PLUS_SCRAMBLE_SPAN = 60
 
 def default_sokoban_config() -> dict[str, Any]:
     return {
+        "spec": "sokoban-default",
         "level_sets": ["starter-authored-v1"],
         "level_ids": None,
         "max_levels": 20,
@@ -1035,6 +1040,9 @@ def _run_sokoban_episode_job(
     provider: Any,
     provider_name: str,
     model_name: str,
+    spec_name: str,
+    interaction_mode: str,
+    stateless: bool,
     max_turns: int,
     state_format: str,
     image_tile_size: int,
@@ -1102,6 +1110,7 @@ def _run_sokoban_episode_job(
         deadlock_patience=deadlock_patience,
         deadlock_checker=deadlock_checker,
         deadlock_terminate_on_check=job.effective_terminal_on_deadlock,
+        stateless=stateless,
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)
@@ -1130,6 +1139,9 @@ def _run_sokoban_episode_job(
         "run_idx": job.run_idx,
         "provider": provider_name,
         "model": model_name,
+        "spec": spec_name,
+        "interaction_mode": interaction_mode,
+        "stateless": stateless,
         "level_id": metrics.get("level_id", job.level.level_id),
         "level_set": job.level_set_name,
         "prompt_variant": job.prompt_variant.name,
@@ -1165,6 +1177,9 @@ def _run_sokoban_episode_job(
                 "run_idx": job.run_idx,
                 "provider": provider_name,
                 "model": model_name,
+                "spec": spec_name,
+                "interaction_mode": interaction_mode,
+                "stateless": stateless,
                 "level_id": job.level.level_id,
                 "prompt_variant": job.prompt_variant.name,
                 "tools_variant": job.tool_variant.name,
@@ -1332,6 +1347,12 @@ def run_batch(
         args=args,
         config=config,
         provider_name=provider_name,
+    )
+    stateless, interaction_mode = resolve_interaction_mode(args, config)
+    spec_base, spec_name = resolve_spec_name(
+        args,
+        config,
+        interaction_mode=interaction_mode,
     )
     stagnation_patience = _resolve_optional_positive_int(
         getattr(args, "stagnation_patience", None),
@@ -1569,6 +1590,10 @@ def run_batch(
         run_config = {
             "run_id": run_id,
             "timestamp": timestamp,
+            "spec_base": spec_base,
+            "spec": spec_name,
+            "interaction_mode": interaction_mode,
+            "stateless": stateless,
             "game": game_name,
             "provider": provider_name,
             "model": model_name,
@@ -1653,6 +1678,9 @@ def run_batch(
                     provider=get_provider(),
                     provider_name=provider_name,
                     model_name=model_name,
+                    spec_name=spec_name,
+                    interaction_mode=interaction_mode,
+                    stateless=stateless,
                     max_turns=max_turns,
                     state_format=state_format,
                     image_tile_size=image_tile_size,
@@ -1697,7 +1725,14 @@ def run_batch(
                             )
                             next_episode_id += 1
 
-        summary = {"overall": _compute_metrics(episodes), "variants": {}}
+        summary = {
+            "spec_base": spec_base,
+            "spec": spec_name,
+            "interaction_mode": interaction_mode,
+            "stateless": stateless,
+            "overall": _compute_metrics(episodes),
+            "variants": {},
+        }
         for episode in episodes:
             variant_id = episode["variant_id"]
             summary["variants"].setdefault(variant_id, [])

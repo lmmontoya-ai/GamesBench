@@ -190,6 +190,36 @@ def _extract_cost(
     return None
 
 
+def _render_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                part_type = part.get("type")
+                if part_type == "text":
+                    text = part.get("text")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+                    continue
+                if part_type == "image_url":
+                    parts.append("[image]")
+                    continue
+            parts.append(json.dumps(part, sort_keys=True, default=str))
+        return "\n".join(parts)
+    return json.dumps(content, sort_keys=True, default=str)
+
+
+def _conversation_to_text(conversation: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for message in conversation:
+        role = str(message.get("role", "user")).upper()
+        content = _render_message_content(message.get("content"))
+        lines.append(f"{role}:\n{content}".strip())
+    return "\n\n".join(lines)
+
+
 def _tool_schemas_to_openai_chat(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -458,6 +488,7 @@ class OpenRouterProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
         try:
             from openai import OpenAI
@@ -482,7 +513,9 @@ class OpenRouterProvider:
         )
 
         tools = _tool_schemas_to_openai_chat(tool_schemas)
-        if state_image:
+        if conversation is not None:
+            messages = list(conversation)
+        elif state_image:
             content: list[dict[str, Any]] = []
             if state_text:
                 content.append({"type": "text", "text": state_text})
@@ -645,6 +678,7 @@ class OpenAIResponsesProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
         try:
             from openai import OpenAI
@@ -665,11 +699,16 @@ class OpenAIResponsesProvider:
             )
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "instructions": instructions,
             "tools": tools,
             "tool_choice": "required",
-            "input": [{"role": "user", "content": state_text}],
+            "input": (
+                list(conversation)
+                if conversation is not None
+                else [{"role": "user", "content": state_text}]
+            ),
         }
+        if conversation is None:
+            kwargs["instructions"] = instructions
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if self.max_output_tokens is not None:
@@ -743,6 +782,7 @@ class CLIProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
         if state_image:
             return ProviderResult(
@@ -750,12 +790,21 @@ class CLIProvider:
                 raw=None,
                 error="Image inputs are not supported by CLIProvider.",
             )
-        prompt = (
-            f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
-            f"{json.dumps(tool_schemas, indent=2)}\n\n"
-            "Return a single tool call as JSON: "
-            '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
-        )
+        if conversation is not None:
+            prompt = (
+                "Conversation history:\n"
+                f"{_conversation_to_text(conversation)}\n\nTOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "Return a single tool call as JSON: "
+                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+            )
+        else:
+            prompt = (
+                f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "Return a single tool call as JSON: "
+                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+            )
         cmd = self._build_command(prompt)
         use_stdin = self.use_stdin and not self._uses_prompt_placeholder()
         try:
@@ -819,6 +868,7 @@ class CodexCLIProvider:
         tool_schemas: list[dict[str, Any]],
         instructions: str,
         state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
     ) -> ProviderResult:
         if state_image:
             return ProviderResult(
@@ -826,12 +876,21 @@ class CodexCLIProvider:
                 raw=None,
                 error="Image inputs are not supported by CodexCLIProvider.",
             )
-        prompt = (
-            f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
-            f"{json.dumps(tool_schemas, indent=2)}\n\n"
-            "Return a single tool call as JSON: "
-            '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
-        )
+        if conversation is not None:
+            prompt = (
+                "Conversation history:\n"
+                f"{_conversation_to_text(conversation)}\n\nTOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "Return a single tool call as JSON: "
+                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+            )
+        else:
+            prompt = (
+                f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "Return a single tool call as JSON: "
+                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+            )
         out_path = Path(self._tmpdir.name) / "last_message.json"
         if out_path.exists():
             out_path.unlink()

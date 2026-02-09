@@ -23,6 +23,7 @@ class TestBatchCli(unittest.TestCase):
         self.assertIn("--parallelism", output)
         self.assertIn("--max-inflight-provider", output)
         self.assertIn("--stagnation-patience", output)
+        self.assertIn("--stateless", output)
         self.assertIn("--suite", output)
         self.assertIn("--list-suites", output)
         self.assertIn("--game", output)
@@ -138,6 +139,11 @@ class TestBatchCli(unittest.TestCase):
             }
             self.assertEqual(actual_cases, expected_cases)
             self.assertEqual(run_config["runs_per_variant"], 3)
+            self.assertEqual(run_config["spec"], "easy-v1-stateful")
+            self.assertEqual(run_config["interaction_mode"], "stateful")
+            summary = json.loads((run_dir / "summary.json").read_text())
+            self.assertEqual(summary["spec"], "easy-v1-stateful")
+            self.assertEqual(summary["interaction_mode"], "stateful")
             episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
             self.assertEqual(len(episodes), 18)
 
@@ -188,8 +194,45 @@ class TestBatchCli(unittest.TestCase):
             }
             self.assertEqual(actual_cases, expected_cases)
             self.assertEqual(run_config["runs_per_variant"], 5)
+            self.assertEqual(run_config["spec"], "standard-v1-stateful")
+            self.assertEqual(run_config["interaction_mode"], "stateful")
             episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
             self.assertEqual(len(episodes), 45)
+
+    def test_suite_standard_v1_stateless_sets_spec_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--suite",
+                        "standard-v1",
+                        "--stateless",
+                        "--game",
+                        "hanoi",
+                        "--max-turns",
+                        "1",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            run_dir = Path(json.loads(stdout.getvalue())["run_dirs"][0])
+            run_config = json.loads((run_dir / "run_config.json").read_text())
+            self.assertEqual(run_config["spec"], "standard-v1-stateless")
+            self.assertEqual(run_config["interaction_mode"], "stateless")
+            self.assertTrue(run_config["stateless"])
+            summary = json.loads((run_dir / "summary.json").read_text())
+            self.assertEqual(summary["spec"], "standard-v1-stateless")
+            self.assertEqual(summary["interaction_mode"], "stateless")
 
     def test_config_overrides_suite_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
