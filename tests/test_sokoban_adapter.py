@@ -24,6 +24,7 @@ class _ScriptedProvider:
 
     def __init__(self, results: list[ProviderResult]) -> None:
         self._results = list(results)
+        self.calls = 0
 
     def next_tool_calls(
         self,
@@ -34,6 +35,7 @@ class _ScriptedProvider:
         state_image: dict[str, Any] | None = None,
     ) -> ProviderResult:
         del state_text, tool_schemas, instructions, state_image
+        self.calls += 1
         if self._results:
             return self._results.pop(0)
         return ProviderResult([], raw=None, error="No scripted response")
@@ -324,6 +326,33 @@ class TestSokobanGameAdapter(unittest.TestCase):
         self.assertTrue(result.terminated_early)
         self.assertEqual(result.termination_reason, "deadlock_terminal")
         self.assertEqual(result.tool_calls, 1)
+
+    def test_harness_stops_on_initial_deadlock_when_terminal_enabled(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@  #
+#$ .#
+#####
+"""
+        )
+        env = SokobanEnv(level, detect_deadlocks=True, terminal_on_deadlock=True)
+        self.assertTrue(env.is_deadlocked())
+        adapter = SokobanGameAdapter(env)
+        provider = _ScriptedProvider(
+            [ProviderResult(tool_calls=[ToolCall("sokoban_get_state", {})], raw={})]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=5,
+            deadlock_checker=lambda a: bool(a.env.is_deadlocked()),
+            deadlock_terminate_on_check=True,
+        )
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "deadlock_terminal")
+        self.assertEqual(result.tool_calls, 0)
+        self.assertEqual(provider.calls, 0)
 
 
 if __name__ == "__main__":
