@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 llm = ["openai>=2.16.0"]
 viz = ["pillow"]
+bench = ["tqdm>=4.66.0"]
 
 [project.scripts]
 games-bench = "games_bench.bench.cli:main"
@@ -21,6 +22,7 @@ games-bench = "games_bench.bench.cli:main"
 dev = ["black==24.1.1", "pre-commit"]
 llm = ["openai>=2.16.0"]
 viz = ["pillow"]
+bench = ["tqdm>=4.66.0"]
 
 [tool.setuptools]
 include-package-data = true

@@ -743,6 +743,189 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def estimate_episodes(
+    args: argparse.Namespace,
+    config: dict[str, Any] | None,
+    *,
+    game_name: str = "hanoi",  # noqa: ARG001
+) -> int:
+    config = config or {}
+    provider_name = getattr(args, "provider", None)
+    if not provider_name:
+        raise SystemExit("Missing required argument: --provider")
+    model_arg = getattr(args, "model", None)
+    models = _resolve_models(provider_name, config, model_arg)
+    if not models:
+        raise SystemExit("No models provided. Use --model or config.json.")
+
+    start_peg_arg = getattr(args, "start_peg", None)
+    start_peg_config = config.get("start_peg", 0)
+    start_peg_value = (
+        int(start_peg_arg) if start_peg_arg is not None else start_peg_config
+    )
+    goal_peg_arg = getattr(args, "goal_peg", None)
+    goal_peg_config = config.get("goal_peg")
+    goal_peg_value = int(goal_peg_arg) if goal_peg_arg is not None else goal_peg_config
+
+    cases_arg = getattr(args, "cases", None)
+    n_pegs_arg = getattr(args, "n_pegs", None)
+    n_disks_arg = getattr(args, "n_disks", None)
+    if cases_arg is not None and (n_pegs_arg is not None or n_disks_arg is not None):
+        raise SystemExit("Do not mix --case with --n-pegs/--n-disks.")
+
+    raw_cases = cases_arg if cases_arg is not None else config.get("cases")
+    scenarios: list[HanoiCase] = []
+    if raw_cases is not None:
+        parsed_cases = _parse_cases_config(raw_cases)
+        for n_pegs, n_disks, case_start, case_goal in parsed_cases:
+            if n_disks < 1:
+                raise SystemExit(f"n_disks must be >= 1, got {n_disks}")
+            effective_start = (
+                int(start_peg_arg)
+                if start_peg_arg is not None
+                else (case_start if case_start is not None else start_peg_config)
+            )
+            effective_goal = (
+                int(goal_peg_arg)
+                if goal_peg_arg is not None
+                else (case_goal if case_goal is not None else goal_peg_config)
+            )
+            resolved_start, resolved_goal = _resolve_start_goal_pegs(
+                n_pegs=n_pegs,
+                start_peg_value=effective_start,
+                goal_peg_value=effective_goal,
+            )
+            scenarios.append(
+                HanoiCase(
+                    n_pegs=n_pegs,
+                    n_disks=n_disks,
+                    start_peg=resolved_start,
+                    goal_peg=resolved_goal,
+                )
+            )
+    else:
+        n_pegs_list = (
+            _parse_int_list(n_pegs_arg)
+            if n_pegs_arg is not None
+            else _parse_int_list([str(x) for x in config.get("n_pegs", [3])])
+        )
+        if not n_pegs_list:
+            raise SystemExit("No peg counts provided. Use --n-pegs or config n_pegs.")
+        if any(n_pegs < 3 for n_pegs in n_pegs_list):
+            raise SystemExit("All n_pegs values must be >= 3.")
+
+        n_disks_list = (
+            _parse_int_list(n_disks_arg)
+            if n_disks_arg is not None
+            else _parse_int_list([str(x) for x in config.get("n_disks", [3])])
+        )
+        if not n_disks_list:
+            raise SystemExit(
+                "No disk counts provided. Use --n-disks or config n_disks."
+            )
+        if any(n_disks < 1 for n_disks in n_disks_list):
+            raise SystemExit("All n_disks values must be >= 1.")
+
+        for n_pegs in n_pegs_list:
+            resolved_start, resolved_goal = _resolve_start_goal_pegs(
+                n_pegs=n_pegs,
+                start_peg_value=(
+                    None if start_peg_value is None else int(start_peg_value)
+                ),
+                goal_peg_value=(
+                    None if goal_peg_value is None else int(goal_peg_value)
+                ),
+            )
+            for n_disks in n_disks_list:
+                scenarios.append(
+                    HanoiCase(
+                        n_pegs=n_pegs,
+                        n_disks=n_disks,
+                        start_peg=resolved_start,
+                        goal_peg=resolved_goal,
+                    )
+                )
+
+    if not scenarios:
+        raise SystemExit("No Hanoi cases selected to run.")
+
+    deduped_scenarios: list[HanoiCase] = []
+    seen_scenarios: set[tuple[int, int, int, int]] = set()
+    for scenario in scenarios:
+        key = (
+            scenario.n_pegs,
+            scenario.n_disks,
+            scenario.start_peg,
+            scenario.goal_peg,
+        )
+        if key in seen_scenarios:
+            continue
+        seen_scenarios.add(key)
+        deduped_scenarios.append(scenario)
+    scenarios = deduped_scenarios
+
+    runs_per_variant = _resolve_positive_int(
+        getattr(args, "runs_per_variant", None), config, "runs_per_variant", 3
+    )
+    prompt_file_arg = getattr(args, "prompt_file", None)
+    prompt_variants = (
+        _load_prompt_variants(prompt_file_arg)
+        if prompt_file_arg
+        else DEFAULT_PROMPT_VARIANTS
+    )
+    selected_prompt_names_raw = getattr(args, "prompt_variants", None) or config.get(
+        "prompt_variants", ["minimal"]
+    )
+    selected_prompt_names = _parse_str_list([selected_prompt_names_raw])
+    if not selected_prompt_names:
+        raise SystemExit("No Hanoi prompt variants selected.")
+    unknown_prompt_variants = [
+        name for name in selected_prompt_names if name not in prompt_variants
+    ]
+    if unknown_prompt_variants:
+        raise SystemExit(
+            "Unknown Hanoi prompt variant(s): "
+            + ", ".join(sorted(set(unknown_prompt_variants)))
+        )
+    selected_prompt_variants = [prompt_variants[name] for name in selected_prompt_names]
+
+    tool_variants = DEFAULT_TOOL_VARIANTS
+    selected_tool_names_raw = getattr(args, "tool_variants", None) or config.get(
+        "tool_variants", ["move_only"]
+    )
+    selected_tool_names = _parse_str_list([selected_tool_names_raw])
+    if not selected_tool_names:
+        raise SystemExit("No Hanoi tool variants selected.")
+    unknown_tool_variants = [
+        name for name in selected_tool_names if name not in tool_variants
+    ]
+    if unknown_tool_variants:
+        raise SystemExit(
+            "Unknown Hanoi tool variant(s): "
+            + ", ".join(sorted(set(unknown_tool_variants)))
+        )
+    selected_tool_variants = [tool_variants[name] for name in selected_tool_names]
+
+    allowed_tools_override = getattr(args, "allowed_tools", None) or config.get(
+        "allowed_tools"
+    )
+    if allowed_tools_override:
+        allowed_tools = _parse_str_list([allowed_tools_override])
+        if not allowed_tools:
+            raise SystemExit("allowed_tools override must include at least one tool.")
+        selected_tool_variants = [
+            ToolVariant(name="custom", allowed_tools=allowed_tools)
+        ]
+
+    episodes_per_model = (
+        len(scenarios)
+        * len(selected_prompt_variants)
+        * len(selected_tool_variants)
+        * runs_per_variant
+    )
+    return len(models) * episodes_per_model
+
+
 def _raw_lines_for_events(
     *,
     events: list[dict[str, Any]],
@@ -855,9 +1038,13 @@ def _run_hanoi_episode_job(
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)
+    turn_count = sum(
+        1 for event in result.events if event.get("type") == "provider_result"
+    )
 
     episode = {
         "episode_id": job.episode_id,
+        "game": "hanoi",
         "variant_id": job.variant_id,
         "run_idx": job.run_idx,
         "provider": provider_name,
@@ -872,6 +1059,7 @@ def _run_hanoi_episode_job(
         "prompt_variant": job.prompt_variant.name,
         "tools_variant": job.tool_variant.name,
         "solved": result.solved,
+        "turn_count": turn_count,
         "move_count": result.game_metrics.get("move_count", result.move_count),
         "optimal_steps": result.game_metrics.get("optimal_steps", result.optimal_steps),
         "illegal_moves": result.illegal_moves,
@@ -950,6 +1138,7 @@ def _commit_hanoi_episode_output(
     raw_file: Any,
     record: bool,
     recordings_dir: Path,
+    progress_reporter: Any | None = None,
 ) -> None:
     episode = dict(output.episode)
     if record and output.recording is not None:
@@ -970,6 +1159,8 @@ def _commit_hanoi_episode_output(
     )
     for line in output.raw_lines:
         raw_file.write(line + "\n")
+    if progress_reporter is not None:
+        progress_reporter.on_episode_complete(episode)
 
 
 def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
@@ -989,6 +1180,7 @@ def run_batch(
     game_name: str = "hanoi",
 ) -> list[Path]:
     config = config or {}
+    progress_reporter = getattr(args, "_progress_reporter", None)
     provider_name = getattr(args, "provider", None)
     if not provider_name:
         raise SystemExit("Missing required argument: --provider")
@@ -1437,6 +1629,7 @@ def run_batch(
                         raw_file=raw_file,
                         record=record,
                         recordings_dir=recordings_dir,
+                        progress_reporter=progress_reporter,
                     )
             else:
                 with ThreadPoolExecutor(max_workers=parallelism) as executor:
@@ -1454,6 +1647,7 @@ def run_batch(
                                 raw_file=raw_file,
                                 record=record,
                                 recordings_dir=recordings_dir,
+                                progress_reporter=progress_reporter,
                             )
                             next_episode_id += 1
 

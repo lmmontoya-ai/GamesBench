@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Any
 
 
@@ -75,6 +76,24 @@ def add_common_batch_arguments(
         help=(
             "Enable provider streaming debug logs (OpenRouter only). "
             "Use --no-stream-debug to force disable."
+        ),
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Show benchmark episode progress with ETA and per-episode stats. "
+            "Defaults to enabled on TTY stderr."
+        ),
+    )
+    parser.add_argument(
+        "--progress-refresh-s",
+        type=float,
+        default=None,
+        help=(
+            "Minimum seconds between progress refreshes "
+            "(default from config or 0.25)."
         ),
     )
     parser.add_argument(
@@ -174,3 +193,39 @@ def resolve_spec_name(
             spec_base = trimmed or "custom"
             break
     return spec_base, f"{spec_base}-{interaction_mode}"
+
+
+def resolve_progress_settings(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[bool, float, bool]:
+    progress_arg = getattr(args, "progress", None)
+    progress_refresh_arg = getattr(args, "progress_refresh_s", None)
+    has_config_progress = "progress" in config
+    has_config_refresh = "progress_refresh_s" in config
+
+    if progress_arg is not None:
+        enabled = bool(progress_arg)
+        explicit_request = True
+    elif has_config_progress:
+        enabled = bool(config.get("progress"))
+        explicit_request = True
+    else:
+        enabled = bool(sys.stderr.isatty())
+        explicit_request = False
+
+    refresh_value = (
+        progress_refresh_arg
+        if progress_refresh_arg is not None
+        else config.get("progress_refresh_s", 0.25)
+    )
+    if refresh_value is None and has_config_refresh:
+        refresh_value = 0.25
+
+    try:
+        refresh_s = float(refresh_value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("progress_refresh_s must be a positive number.") from exc
+    if refresh_s <= 0:
+        raise SystemExit("progress_refresh_s must be > 0.")
+    return enabled, refresh_s, explicit_request

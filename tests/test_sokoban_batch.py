@@ -69,6 +69,14 @@ class TestSokobanBatch(unittest.TestCase):
             self.assertIsNone(args.provider_retries)
             self.assertIsNone(args.provider_backoff)
 
+    def test_estimate_episodes_matches_run_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            estimated = sokoban_bench.estimate_episodes(args, config={})
+            run_dir = sokoban_bench.run_batch(args, config={}, game_name="sokoban")[0]
+            actual = len((Path(run_dir) / "episodes.jsonl").read_text().splitlines())
+            self.assertEqual(actual, estimated)
+
     def test_summary_includes_denominator_aware_optimal_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = _base_args(out_dir=tmp, state_format="text")
@@ -118,6 +126,7 @@ class TestSokobanBatch(unittest.TestCase):
                 "grid_size",
                 "solved",
                 "deadlocked",
+                "turn_count",
                 "move_count",
                 "push_count",
                 "illegal_moves",
