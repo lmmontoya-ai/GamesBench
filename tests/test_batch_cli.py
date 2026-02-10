@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
@@ -361,6 +362,40 @@ class TestBatchCli(unittest.TestCase):
                 ]
             )
         self.assertIn("Unknown suite", str(ctx.exception))
+
+    def test_invalid_games_config_shape_reports_parser_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "invalid_config.json"
+            config_path.write_text(json.dumps({"games": 123}))
+            with self.assertRaises(SystemExit) as ctx:
+                batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        'python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                        "--config",
+                        str(config_path),
+                    ]
+                )
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_estimator_runtime_errors_are_not_silently_swallowed(self) -> None:
+        benchmark = type(
+            "_Bench",
+            (),
+            {"estimate_episodes": staticmethod(lambda _args, _cfg: 1 / 0)},
+        )()
+        with self.assertRaises(SystemExit) as ctx:
+            batch._estimate_episode_total(
+                args=argparse.Namespace(),
+                game_configs=[("custom", benchmark, {})],
+                progress_enabled=True,
+                progress_explicit=True,
+            )
+        self.assertIn(
+            "Failed to estimate episodes for benchmark 'custom'", str(ctx.exception)
+        )
 
     def test_no_score_then_score_command_generates_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

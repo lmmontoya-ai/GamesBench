@@ -4,7 +4,6 @@ import argparse
 import io
 import json
 import math
-import os
 import platform
 import threading
 from dataclasses import asdict, dataclass
@@ -20,6 +19,18 @@ from games_bench.bench.common import (
 )
 from games_bench.bench.executor import run_episode_jobs
 from games_bench.bench.lineage import ensure_run_manifest, make_lineage_event
+from games_bench.bench.runner_shared import (
+    build_provider as _shared_build_provider,
+    parse_int_list as _shared_parse_int_list,
+    parse_str_list as _shared_parse_str_list,
+    resolve_checkpoint_interval as _shared_resolve_checkpoint_interval,
+    resolve_models as _shared_resolve_models,
+    resolve_optional_positive_int as _shared_resolve_optional_positive_int,
+    resolve_out_dir_base as _shared_resolve_out_dir_base,
+    resolve_parallel_settings as _shared_resolve_parallel_settings,
+    resolve_positive_int as _shared_resolve_positive_int,
+    require_env as _shared_require_env,
+)
 from games_bench.bench.scoring import build_summary_document
 from games_bench.bench.taxonomy import annotate_episode_with_taxonomy
 from games_bench.games.hanoi.adapter import HanoiGameAdapter
@@ -31,10 +42,6 @@ from games_bench.games.hanoi.prompts import (
 )
 from games_bench.games.hanoi.vision import render_hanoi_env_image
 from games_bench.llm import (
-    CLIProvider,
-    CodexCLIProvider,
-    OpenAIResponsesProvider,
-    OpenRouterProvider,
     build_recording,
     run_tool_calling_episode,
 )
@@ -175,10 +182,7 @@ def build_hanoi_adapter(env: TowerOfHanoiEnv, **kwargs: Any) -> HanoiGameAdapter
 
 
 def _require_env(name: str) -> str:
-    value = os.environ.get(name, "")
-    if not value:
-        raise SystemExit(f"Missing required environment variable: {name}")
-    return value
+    return _shared_require_env(name)
 
 
 def _build_provider(
@@ -189,71 +193,21 @@ def _build_provider(
     provider_backoff: float | None = None,
     stream_debug: bool | None = None,
 ) -> Any:
-    retries = provider_retries
-    if retries is None:
-        retries = getattr(args, "provider_retries", 2)
-    if retries is None:
-        retries = 2
-
-    backoff = provider_backoff
-    if backoff is None:
-        backoff = getattr(args, "provider_backoff", 1.0)
-    if backoff is None:
-        backoff = 1.0
-
-    debug = stream_debug
-    if debug is None:
-        debug = getattr(args, "stream_debug", False)
-
-    if args.provider == "openrouter":
-        model = model or _require_env("OPENROUTER_MODEL")
-        return OpenRouterProvider(
-            model=model,
-            max_retries=int(retries),
-            retry_backoff_s=float(backoff),
-            stream_debug=bool(debug),
-            timeout_s=int(getattr(args, "timeout_s", 300)),
-        )
-    if args.provider == "openai":
-        model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-        return OpenAIResponsesProvider(model=model)
-    if args.provider == "codex":
-        return CodexCLIProvider(
-            codex_path=args.codex_path,
-            extra_args=args.codex_args,
-            timeout_s=args.timeout_s,
-        )
-    if args.provider == "cli":
-        if not args.cli_cmd:
-            raise SystemExit("--cli-cmd is required for provider=cli")
-        return CLIProvider(
-            command=args.cli_cmd, use_stdin=not args.no_stdin, timeout_s=args.timeout_s
-        )
-    raise SystemExit(f"Unknown provider: {args.provider}")
+    return _shared_build_provider(
+        args,
+        model,
+        provider_retries=provider_retries,
+        provider_backoff=provider_backoff,
+        stream_debug=stream_debug,
+    )
 
 
 def _parse_str_list(values: Iterable[Any]) -> list[str]:
-    result: list[str] = []
-    for value in values:
-        if isinstance(value, (list, tuple, set)):
-            result.extend(_parse_str_list(value))
-            continue
-        for chunk in str(value).split(","):
-            chunk = chunk.strip()
-            if chunk:
-                result.append(chunk)
-    return result
+    return _shared_parse_str_list(values)
 
 
 def _parse_int_list(values: Iterable[str]) -> list[int]:
-    result: list[int] = []
-    for value in values:
-        for chunk in str(value).split(","):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            result.append(int(chunk))
-    return result
+    return _shared_parse_int_list(values)
 
 
 def _parse_case_token(value: str) -> tuple[int, int]:
@@ -342,24 +296,7 @@ def _resolve_start_goal_pegs(
 def _resolve_models(
     provider: str, config: dict[str, Any] | None, fallback: str | None
 ) -> list[str]:
-    if config and "models" in config:
-        models = config["models"]
-        if isinstance(models, list):
-            return [str(m) for m in models]
-        if isinstance(models, dict):
-            if provider in models:
-                provider_models = models[provider]
-                if isinstance(provider_models, list):
-                    return [str(m) for m in provider_models]
-                return [str(provider_models)]
-            if "default" in models:
-                default_models = models["default"]
-                if isinstance(default_models, list):
-                    return [str(m) for m in default_models]
-                return [str(default_models)]
-    if provider in {"openrouter", "openai"}:
-        return [fallback] if fallback else []
-    return [fallback or "default"]
+    return _shared_resolve_models(provider, config, fallback)
 
 
 def _load_prompt_variants(path: str) -> dict[str, PromptVariant]:
@@ -403,10 +340,7 @@ def _resolve_positive_int(
     key: str,
     default: int,
 ) -> int:
-    value = int(arg_value) if arg_value is not None else int(config.get(key, default))
-    if value < 1:
-        raise SystemExit(f"{key} must be >= 1, got {value}")
-    return value
+    return _shared_resolve_positive_int(arg_value, config, key, default)
 
 
 def _resolve_optional_positive_int(
@@ -414,13 +348,7 @@ def _resolve_optional_positive_int(
     config: dict[str, Any],
     key: str,
 ) -> int | None:
-    value = arg_value if arg_value is not None else config.get(key)
-    if value is None:
-        return None
-    resolved = int(value)
-    if resolved < 1:
-        raise SystemExit(f"{key} must be >= 1, got {resolved}")
-    return resolved
+    return _shared_resolve_optional_positive_int(arg_value, config, key)
 
 
 def _resolve_parallel_settings(
@@ -429,22 +357,11 @@ def _resolve_parallel_settings(
     config: dict[str, Any],
     provider_name: str,
 ) -> tuple[int, int]:
-    parallelism = _resolve_positive_int(
-        getattr(args, "parallelism", None), config, "parallelism", 1
+    return _shared_resolve_parallel_settings(
+        args=args,
+        config=config,
+        provider_name=provider_name,
     )
-    max_inflight_arg = getattr(args, "max_inflight_provider", None)
-    max_inflight_cfg = config.get("max_inflight_provider")
-    if max_inflight_arg is not None:
-        max_inflight = int(max_inflight_arg)
-    elif max_inflight_cfg is not None:
-        max_inflight = int(max_inflight_cfg)
-    elif provider_name == "openrouter":
-        max_inflight = min(parallelism, 4)
-    else:
-        max_inflight = parallelism
-    if max_inflight < 1:
-        raise SystemExit(f"max_inflight_provider must be >= 1, got {max_inflight}")
-    return parallelism, max_inflight
 
 
 def _resolve_optional_positive_float(
@@ -1164,27 +1081,13 @@ def _run_hanoi_episode_job(
 
 
 def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
-    base_str = str(base)
-    if "{game}" in base_str:
-        base_str = base_str.replace("{game}", game_name)
-    path = Path(base_str)
-    if path.name == game_name:
-        return path
-    return path / game_name
+    return _shared_resolve_out_dir_base(base, game_name)
 
 
 def _resolve_checkpoint_interval(
     args: argparse.Namespace, config: dict[str, Any]
 ) -> int:
-    raw = (
-        getattr(args, "checkpoint_interval", None)
-        if getattr(args, "checkpoint_interval", None) is not None
-        else config.get("checkpoint_interval", 1)
-    )
-    value = int(raw)
-    if value < 1:
-        raise SystemExit(f"checkpoint_interval must be >= 1, got {value}")
-    return value
+    return _shared_resolve_checkpoint_interval(args, config)
 
 
 def run_batch(

@@ -195,25 +195,25 @@ def _standard_v1_config() -> dict[str, Any]:
 
 
 def load_builtin_suites() -> None:
-    if _REGISTRY:
-        return
-    register_suite(
-        SuiteSpec(
-            name="easy-v1",
-            description=(
-                "Accessible planning suite across Hanoi and Sokoban tuned "
-                "for smaller-capability models."
-            ),
-            config_factory=_easy_v1_config,
+    if "easy-v1" not in _REGISTRY:
+        register_suite(
+            SuiteSpec(
+                name="easy-v1",
+                description=(
+                    "Accessible planning suite across Hanoi and Sokoban tuned "
+                    "for smaller-capability models."
+                ),
+                config_factory=_easy_v1_config,
+            )
         )
-    )
-    register_suite(
-        SuiteSpec(
-            name="standard-v1",
-            description=(
-                "Canonical planning suite across Hanoi and Sokoban with "
-                "fixed difficulty ladders and repeated runs."
-            ),
-            config_factory=_standard_v1_config,
+    if "standard-v1" not in _REGISTRY:
+        register_suite(
+            SuiteSpec(
+                name="standard-v1",
+                description=(
+                    "Canonical planning suite across Hanoi and Sokoban with "
+                    "fixed difficulty ladders and repeated runs."
+                ),
+                config_factory=_standard_v1_config,
+            )
         )
-    )

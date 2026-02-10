@@ -155,6 +155,32 @@ class TestScoreCli(unittest.TestCase):
             self.assertEqual(episode["outcome_code"], "hooked_outcome")
             self.assertEqual(episode["failure_tags"], ["hooked_tag"])
 
+    def test_episode_taxonomy_hook_receives_isolated_run_config_per_episode(
+        self,
+    ) -> None:
+        episodes = [
+            {"episode_id": 0, "variant_id": "v", "solved": False},
+            {"episode_id": 1, "variant_id": "v", "solved": False},
+        ]
+        observed_nested_values: list[int] = []
+
+        def taxonomy_hook(
+            _episode: dict[str, object], run_config: dict[str, object]
+        ) -> list[str]:
+            nested = run_config.get("nested", {})
+            if isinstance(nested, dict):
+                observed_nested_values.append(int(nested.get("value", -1)))
+                nested["value"] = 999
+            return []
+
+        scoring.enrich_episodes_with_taxonomy(
+            episodes,
+            game_name="hanoi",
+            run_config={"nested": {"value": 1}},
+            episode_taxonomy=taxonomy_hook,
+        )
+        self.assertEqual(observed_nested_values, [1, 1])
+
 
 if __name__ == "__main__":
     unittest.main()
