@@ -1,17 +1,17 @@
 ## games-bench
 
-Framework-agnostic benchmark environments for RL and LLM tool-calling research.
+Benchmark environments and orchestration for evaluating long-horizon planning and spatial reasoning in tool-calling agents.
 
-## Setup
+## Install
 
-- Install dev environment: `uv sync`
+- Dev install: `uv sync`
 - Run all tests: `uv run python -m unittest discover -s tests`
 
 Optional dependency groups:
 
 - LLM providers: `uv sync --group llm`
 - Visualization/review images: `uv sync --group viz`
-- Benchmark CLI progress UI: `uv sync --group bench`
+- Bench progress UI: `uv sync --group bench`
 - Everything: `uv sync --group llm --group viz --group bench`
 
 Equivalent `pip` installs:
@@ -22,218 +22,223 @@ Equivalent `pip` installs:
 - Bench progress: `pip install 'games-bench[bench]'`
 - All optional: `pip install 'games-bench[llm,viz,bench]'`
 
-CLI invocation:
+CLI entrypoints:
 
 - Preferred: `uv run games-bench ...`
-- Fallback (always works in-repo): `uv run python -m games_bench.bench ...`
+- Fallback: `uv run python -m games_bench.bench ...`
 
-## Repo Layout
+## Fastest way to run the benchmark
 
-- `games_bench/games/` game engine (envs/adapters/prompts/vision/render/review), no benchmark deps
-- `games_bench/llm/` game-agnostic harness/providers/recording
-- `games_bench/bench/` orchestration CLI/registry/batch dispatch
-- `configs/` sample config files
-- `artifacts/` generated runs/renders/reviews
-- `apps/renderer-hanoi/` interactive Three.js Hanoi renderer
+This repo is suite-first. Start with predefined specs:
 
-## Quick Start
+1. List available suites:
 
-Run a single-game benchmark:
+- `uv run games-bench run --list-suites`
 
-- Hanoi:
-  - `uv run games-bench run hanoi --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"hanoi_move\\\",\\\"arguments\\\":{\\\"from_peg\\\":0,\\\"to_peg\\\":2}}\")"' --n-pegs 3 --n-disks 3 --runs-per-variant 1 --prompt-variant minimal --tools-variant move_only`
-- Sokoban:
-  - `uv run games-bench run sokoban --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"sokoban_move\\\",\\\"arguments\\\":{\\\"direction\\\":\\\"right\\\"}}\")"' --level-id starter-authored-v1:1 --runs-per-level 1 --prompt-variant minimal --tools-variant move_only`
-  - Procedural Sokoban:
-    - `uv run games-bench run sokoban --provider cli --cli-cmd 'python -c "print(\"{\\\"name\\\":\\\"sokoban_move\\\",\\\"arguments\\\":{\\\"direction\\\":\\\"right\\\"}}\")"' --procgen-grid-size 8x8 --procgen-box-count 2 --procgen-levels-per-combo 2 --procgen-seed 42 --runs-per-level 1 --prompt-variant minimal --tools-variant move_only`
+2. Run `easy-v1` (small-model-friendly) on one model:
 
-Run config-driven mode (multi-game capable):
+- `uv run games-bench run --provider openrouter --model <model_name> --suite easy-v1`
 
-- `uv run games-bench run --provider openrouter --config configs/hanoi.json --game hanoi`
-- `uv run games-bench run --provider openrouter --config configs/sokoban.json --game sokoban`
+3. Run `standard-v1` (harder canonical benchmark):
 
-Run canonical benchmark suite:
+- `uv run games-bench run --provider openrouter --model <model_name> --suite standard-v1`
 
-- List suites: `uv run games-bench run --list-suites`
-- Run easy suite (small-model-friendly): `uv run games-bench run --provider openrouter --model google/gemini-2.5-flash --suite easy-v1`
-- Run suite as-is: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
-- Run stateless variant of a suite: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --stateless`
-- Run suite with local overrides from config: `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/standard_v1.json`
-- Override throughput on the CLI: `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --parallelism 4 --max-inflight-provider 4`
+4. Run only one game from a suite:
 
-## OpenRouter Benchmark Workflows
+- `uv run games-bench run --provider openrouter --model <model_name> --suite standard-v1 --game hanoi`
+- `uv run games-bench run --provider openrouter --model <model_name> --suite standard-v1 --game sokoban`
 
-Set your API key:
+5. Run stateless variant (stateful is default):
+
+- `uv run games-bench run --provider openrouter --model <model_name> --suite standard-v1 --stateless`
+
+OpenRouter setup:
 
 - `export OPENROUTER_API_KEY="..."`
 
-Run one model on the canonical suite:
+## Common workflows
 
-- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1`
+### 1) Single model, fully reproducible run id
 
-Run one model on a single game:
+- `uv run games-bench run --provider openrouter --model <model_name> --suite easy-v1 --run-id easy_baseline_modelA`
 
-- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --game hanoi`
-- `uv run games-bench run --provider openrouter --model google/gemini-2.5-pro-preview --suite standard-v1 --game sokoban`
+Notes:
 
-Run a model list (recommended for benchmark studies):
+- `--run-id` makes output directories deterministic.
+- If multiple models are run in one invocation, a provider/model suffix is appended internally.
 
-1. Create a config overlay with models:
+### 2) Resume an interrupted run
+
+- `uv run games-bench run --provider openrouter --model <model_name> --suite easy-v1 --run-id easy_baseline_modelA --resume`
+
+Stricter safety checks:
+
+- `uv run games-bench run --provider openrouter --model <model_name> --suite easy-v1 --run-id easy_baseline_modelA --resume --strict-resume`
+
+Checkpoint cadence:
+
+- `--checkpoint-interval <N>` (default 1 committed episode)
+
+### 3) Run a model list (benchmark study)
+
+Create a config overlay:
 
 ```json
 {
   "models": {
     "openrouter": [
-      "google/gemini-2.5-pro-preview",
-      "openai/gpt-4.1",
-      "anthropic/claude-3.7-sonnet"
+      "model-a",
+      "model-b"
     ]
   }
 }
 ```
 
-2. Run with suite + overlay:
+Run:
 
 - `uv run games-bench run --provider openrouter --suite standard-v1 --config configs/models_openrouter.example.json`
 
-Notes:
+### 4) Generation first, scoring later
 
-- `models.openrouter` can be either a string (single model) or a list.
-- `--config` values override suite defaults where keys overlap.
-- You can combine `--game` with model lists to benchmark only one game.
-- Runtime controls:
-  - `--parallelism` controls concurrent episode workers.
-  - `--max-inflight-provider` caps provider requests in-flight across workers.
-  - `--run-id` provides deterministic run directory naming.
-  - `--resume` resumes interrupted runs (requires `--run-id`).
-  - `--strict-resume` enforces checkpoint/job-plan compatibility checks.
-  - `--checkpoint-interval` controls checkpoint frequency in committed episodes.
-  - `--stagnation-patience` early-stops episodes after repeated no-change turns.
-  - `--stateless` disables turn-history context (default is stateful).
-  - `--no-score` skips summary scoring during generation (score later with `games-bench score`).
-  - `--score-version` stamps summary score version (default `score-v1`).
-  - `--progress/--no-progress` toggles tqdm episode progress (default auto on TTY stderr).
-  - `--progress-refresh-s` controls minimum refresh interval.
+Generate artifacts without writing summary:
 
-## Config Model
+- `uv run games-bench run --provider openrouter --model <model_name> --suite easy-v1 --no-score`
 
-Batch config precedence:
+Score offline from artifacts:
 
-- `BenchSpec.default_config() < global config < per-game overrides`
+- `uv run games-bench score --run-dir <run_dir>`
 
-`config.json` supports:
+Overwrite existing summary after metric/taxonomy updates:
 
-- Global keys: `models`, `spec`, `stateless`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
-  - Progress keys: `progress`, `progress_refresh_s`
-  - Scoring keys: `score` (default true), `score_version` (default `score-v1`)
-- Per-game keys under `"games"`:
-  - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`, `optimal_turn_cap_multiplier`
-  - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
-  - Sokoban (procedural):
-    - cross-product mode: `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`
-    - case mode: `procgen_cases` entries with `grid_size`, `box_count`, optional `levels_per_combo`, `wall_density`, `scramble_steps` (int, `[min,max]`, `"min-max"`, or `"min+"`)
-    - shared controls: `procgen_seed` plus standard run keys (`runs_per_level`, `prompt_variants`, etc.)
+- `uv run games-bench score --run-dir <run_dir> --overwrite`
 
-Sokoban level-source rules:
+Optionally write taxonomy fields back into `episodes.jsonl`:
 
-- Use either bundled levels (`level_sets` / `level_ids`) or procedural generation (`procgen_*`) for a run.
-- Procedural runs are deterministic when `procgen_seed` is set.
+- `uv run games-bench score --run-dir <run_dir> --write-taxonomy`
 
-Hanoi note:
+## Output artifacts
 
-- If `goal_peg` is omitted, it defaults to `n_pegs - 1` per variant.
-
-See examples:
-
-- `configs/hanoi.json`
-- `configs/sokoban.json`
-- `configs/sokoban_procgen.json`
-- `configs/easy_v1.json`
-- `configs/standard_v1.json`
-- `configs/models_openrouter.example.json`
-
-## Outputs
-
-Run outputs are written under:
+Runs are stored under:
 
 - `artifacts/runs/<game>/<provider>/<model>/<run_id>/`
 
-Each run contains:
+Each run directory contains:
 
 - `run_config.json`
-- `run_manifest.json`
-- `execution_state.json` (checkpoint state; updated during execution/resume)
+- `run_manifest.json` (lineage/provenance)
+- `execution_state.json` (checkpoint/resume state)
 - `episodes.jsonl`
 - `traces.jsonl`
-- `summary.json`
-- `recordings/episode_XXXX.json` when `--record` is enabled
-- `raw_generations.jsonl` when `--record-raw` is enabled
+- `summary.json` (if scoring is enabled)
+- `recordings/episode_XXXX.json` (when `--record` is enabled)
+- `raw_generations.jsonl` (when `--record-raw` is enabled)
 
-`run_config.json` and `summary.json` include:
+Important fields:
 
 - `spec`: `<spec>-stateful` or `<spec>-stateless`
 - `interaction_mode`: `stateful` or `stateless`
+- `episodes.jsonl` includes taxonomy fields: `outcome_code`, `failure_tags`, `taxonomy_version`
 
-Offline scoring:
+## Config model
 
-- `uv run games-bench score --run-dir <run_dir>`
-- Overwrite an existing summary after metric/taxonomy changes:
-  - `uv run games-bench score --run-dir <run_dir> --overwrite`
+Merge precedence:
 
-## Render And Review
+- `BenchSpec.default_config()` < global config < per-game overrides
 
-Render playback from recordings:
+Supported run shapes:
 
-- Hanoi: `uv run games-bench render --game hanoi --run-dir <run_dir> --format html`
-- Sokoban: `uv run games-bench render --game sokoban --run-dir <run_dir> --format html`
-- ASCII mode (both games): `--format ascii`
+- `games-bench run <game> [flags]`
+- `games-bench run --config <file>`
+- `games-bench run --config <file> --game <name>`
+
+Global config keys (top-level):
+
+- Core: `models`, `spec`, `stateless`, `out_dir`
+- Recording: `record`, `record_raw`, `record_provider_raw`
+- Provider controls: `provider_retries`, `provider_backoff`, `stream_debug`
+- Throughput controls: `parallelism`, `max_inflight_provider`
+- Stop controls: `stagnation_patience`
+- Resume controls: `run_id`, `resume`, `strict_resume`, `checkpoint_interval`
+- Progress controls: `progress`, `progress_refresh_s`
+- Scoring controls: `score` (default true), `score_version` (default `score-v1`)
+
+Per-game keys under `games`:
+
+- Hanoi:
+  - `cases` or `n_pegs` + `n_disks`
+  - `runs_per_variant`, `prompt_variants`, `tool_variants`
+  - `start_peg`, `goal_peg`
+  - `state_format`, `image_size`, `image_labels`, `image_background`
+  - `optimal_turn_cap_multiplier`
+- Sokoban (bundled):
+  - `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`
+  - `prompt_variants`, `tool_variants`
+  - `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`
+  - `state_format`, `image_tile_size`, `image_labels`, `image_background`
+- Sokoban (procedural):
+  - `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`
+  - or explicit `procgen_cases` entries with `grid_size`, `box_count`, optional `levels_per_combo`, `wall_density`, `scramble_steps`
+  - `procgen_seed`
+
+Example configs:
+
+- `configs/easy_v1.json`
+- `configs/standard_v1.json`
+- `configs/hanoi.json`
+- `configs/sokoban.json`
+- `configs/sokoban_procgen.json`
+- `configs/models_openrouter.example.json`
+
+## Advanced single-game runs
+
+Hanoi:
+
+- `uv run games-bench run hanoi --provider openrouter --model <model_name> --n-pegs 4 --n-disks 8 --runs-per-variant 3 --prompt-variant full --tools-variant move_only`
+
+Sokoban bundled level:
+
+- `uv run games-bench run sokoban --provider openrouter --model <model_name> --level-id starter-authored-v1:1 --runs-per-level 2 --prompt-variant full --tools-variant move_and_query`
+
+Sokoban procedural:
+
+- `uv run games-bench run sokoban --provider openrouter --model <model_name> --procgen-grid-size 10x10 --procgen-box-count 4 --procgen-levels-per-combo 3 --procgen-seed 42 --runs-per-level 2`
+
+## Render and review
+
+Render from recordings:
+
+- Hanoi HTML: `uv run games-bench render --game hanoi --run-dir <run_dir> --format html`
+- Sokoban HTML: `uv run games-bench render --game sokoban --run-dir <run_dir> --format html`
+- ASCII mode: add `--format ascii`
 - Hanoi video mode: `--format video` (requires `ffmpeg`)
 
-Generate review bundles (prompt + step images):
+Generate review bundles:
 
-- Hanoi: `uv run games-bench review --game hanoi --run-dir <run_dir>`
-- Sokoban: `uv run games-bench review --game sokoban --run-dir <run_dir>`
+- `uv run games-bench review --game hanoi --run-dir <run_dir>`
+- `uv run games-bench review --game sokoban --run-dir <run_dir>`
 
-Review image rendering requires the viz dependency group (`pillow`).
-
-## Provider Harnesses
-
-Single-episode provider harness:
+## Provider harnesses (single-episode demos)
 
 - OpenRouter: `OPENROUTER_API_KEY=... OPENROUTER_MODEL=... uv run games-bench provider --provider openrouter`
 - OpenAI: `OPENAI_API_KEY=... uv run games-bench provider --provider openai`
 - Codex CLI: `uv run games-bench provider --provider codex`
 - Generic CLI: `uv run games-bench provider --provider cli --cli-cmd "<command>" --no-stdin`
 
-Streaming diagnostics (OpenRouter):
+OpenRouter stream diagnostics:
 
-- Add `--stream-debug` to `games-bench run ...` or `games-bench provider ...` to print incremental stream chunks to `stderr`.
+- Add `--stream-debug` to `games-bench run ...` or `games-bench provider ...`
 
-## Standalone Game Engine Usage
+## Repository layout
 
-Hanoi example:
-
-```python
-from games_bench.games.hanoi import TowerOfHanoiEnv
-
-env = TowerOfHanoiEnv(n_disks=3, n_pegs=4)
-state = env.reset()
-state, reward, done, info = env.step((0, env.goal_peg))
-```
-
-Sokoban example:
-
-```python
-from games_bench.games.sokoban import SokobanEnv, load_level_by_id
-
-level = load_level_by_id("starter-authored-v1:1")
-env = SokobanEnv(level, detect_deadlocks=True)
-state = env.reset()
-state, reward, done, info = env.step("right")
-```
+- `games_bench/games/` game engine (no benchmark deps)
+- `games_bench/llm/` game-agnostic harness/providers/recording
+- `games_bench/bench/` orchestration CLI/registry/batch/scoring
+- `configs/` benchmark configs
+- `artifacts/` generated runs/renders/reviews
+- `apps/renderer-hanoi/` interactive Hanoi renderer
 
 ## Notes
 
-- Layering and registry contracts are documented in `AGENTS.md`.
-- Suite authoring rules are documented in `easy_spec_guideline.md` and `standard_spec_guidelines.md`.
-- Development plan and phase details are in `development_design.md`.
+- Layering and boundaries: `AGENTS.md`
+- Suite authoring guidance: `easy_spec_guideline.md`, `standard_spec_guidelines.md`
+- Design/roadmap context: `development_design.md`, `BENCH_MATURITY_PLAN.md`
