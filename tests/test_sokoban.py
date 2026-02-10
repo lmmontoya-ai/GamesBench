@@ -13,6 +13,7 @@ from games_bench.games.sokoban import (
     SokobanEnv,
     SokobanError,
     SokobanToolbox,
+    list_bundled_level_sets,
     load_bundled_level_set,
     parse_xsb_levels,
     tool_schemas,
@@ -117,6 +118,14 @@ class TestSokobanLevelLoading(unittest.TestCase):
         self.assertEqual(len(level_set.levels), 3)
         self.assertTrue(level_set.levels[0].known_optimal)
         self.assertFalse(level_set.levels[2].known_optimal)
+
+    def test_bundled_levels_include_second_authored_set(self) -> None:
+        names = list_bundled_level_sets()
+        self.assertIn("starter-authored-v1", names)
+        self.assertIn("starter-authored-v2", names)
+        level_set = load_bundled_level_set("starter-authored-v2")
+        self.assertEqual(level_set.name, "starter-authored-v2")
+        self.assertEqual(len(level_set.levels), 8)
 
 
 class TestSokobanEnv(unittest.TestCase):

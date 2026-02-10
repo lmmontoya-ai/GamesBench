@@ -12,6 +12,18 @@
       "copyright_notice": "Copyright (c) 2026 games-bench contributors",
       "downloaded_at": "2026-02-07",
       "sha256": "229c1bc6644d25237c4cbd5afdd14adca228330e89fec634c71a9fd2a4daa6e8"
+    },
+    {
+      "set_name": "starter-authored-v2",
+      "file": "starter_authored_v2.xsb",
+      "source_name": "games-bench contributors",
+      "source_url": "https://github.com/lumontoya/research/games_bench",
+      "license": "MIT",
+      "license_url": "https://opensource.org/licenses/MIT",
+      "redistribution_allowed": true,
+      "copyright_notice": "Copyright (c) 2026 games-bench contributors",
+      "downloaded_at": "2026-02-10",
+      "sha256": "9c15a399947872fd28b56be8db7d9f9184beb3381da272f5df39f86b547b29fd"
     }
   ]
 }

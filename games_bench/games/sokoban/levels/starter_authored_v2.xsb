@@ -1,0 +1,56 @@
+; starter-authored-v2:1
+; Single push
+#####
+#@$.#
+#####
+
+; starter-authored-v2:2
+; Walk then push
+######
+#@ $.#
+######
+
+; starter-authored-v2:3
+; Detour around wall
+#######
+#@ $ .#
+#  #  #
+#######
+
+; starter-authored-v2:4
+; Two-box corridor
+########
+#@ $$ .#
+#    . #
+########
+
+; starter-authored-v2:5
+; Split goals
+########
+#@  $ .#
+#  ##  #
+#   $ .#
+########
+
+; starter-authored-v2:6
+; Longer routing
+#########
+#@  $   #
+# ### #.#
+#   $  .#
+#########
+
+; starter-authored-v2:7
+; Narrow passages
+########
+#@ $   #
+# ## #.#
+#   $ .#
+########
+
+; starter-authored-v2:8
+; Three boxes
+##########
+#@ $$ $  #
+#   . .. #
+##########

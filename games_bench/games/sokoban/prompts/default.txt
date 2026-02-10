@@ -20,6 +20,6 @@ Rules:
 - Deadlocks are usually irreversible. Avoid pushing boxes into corners or against walls unless a goal is there.
 
 Tool policy:
-- Make exactly one tool call per turn.
+- Use only the number of tool calls needed to make clear progress.
 - Prefer legal, progress-making moves.
 - If state query tools are available, query state before committing to risky pushes.

@@ -37,6 +37,7 @@ def _base_args(*, out_dir: str, state_format: str = "text") -> argparse.Namespac
         procgen_box_counts=None,
         procgen_levels_per_combo=None,
         procgen_seed=None,
+        procgen_seed_sweep=None,
         procgen_wall_density=None,
         procgen_scramble_steps=None,
         max_levels=None,
@@ -340,6 +341,27 @@ class TestSokobanBatch(unittest.TestCase):
                 },
             )
 
+    def test_resolve_procgen_spec_rejects_seed_and_seed_sweep_mix(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.procgen_grid_sizes = ["8x8"]
+        args.procgen_box_counts = ["2"]
+        args.procgen_seed = 7
+        args.procgen_seed_sweep = ["7,8"]
+        with self.assertRaises(SystemExit):
+            sokoban_bench._resolve_procgen_spec(args, config={})
+
+    def test_resolve_procgen_spec_supports_seed_sweep(self) -> None:
+        args = _base_args(out_dir="artifacts/test_runs", state_format="text")
+        args.procgen_grid_sizes = ["8x8"]
+        args.procgen_box_counts = ["2"]
+        args.procgen_levels_per_combo = 1
+        args.procgen_seed = None
+        args.procgen_seed_sweep = ["7,8,8"]
+
+        spec = sokoban_bench._resolve_procgen_spec(args, config={})
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec["seeds"], [7, 8])
+
     def test_select_levels_rejects_mixed_static_and_procgen_flags(self) -> None:
         args = _base_args(out_dir="artifacts/test_runs", state_format="text")
         args.procgen_grid_sizes = ["8x8"]
@@ -366,6 +388,8 @@ class TestSokobanBatch(unittest.TestCase):
             self.assertTrue(run_config["procgen"]["enabled"])
             self.assertEqual(run_config["procgen"]["mode"], "grid_box_product")
             self.assertEqual(run_config["procgen"]["grid_sizes"], ["8x8"])
+            self.assertEqual(run_config["procgen"]["seed"], 17)
+            self.assertEqual(run_config["procgen"]["seed_sweep"], [17])
             self.assertEqual(len(run_config["procgen"]["cases"]), 1)
             self.assertEqual(run_config["procgen"]["cases"][0]["box_count"], 2)
 

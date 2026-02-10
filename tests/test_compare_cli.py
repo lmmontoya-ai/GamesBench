@@ -21,6 +21,7 @@ def _write_run(
     provider: str,
     model: str,
     overall: dict[str, float | int | None],
+    episodes: list[dict[str, object]] | None = None,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
@@ -40,6 +41,9 @@ def _write_run(
     }
     (run_dir / "run_config.json").write_text(json.dumps(run_config, indent=2))
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    if episodes is not None:
+        lines = [json.dumps(dict(row)) for row in episodes]
+        (run_dir / "episodes.jsonl").write_text("\n".join(lines) + "\n")
 
 
 def _run_compare(argv: list[str]) -> int:
@@ -616,6 +620,64 @@ class TestCompareCli(unittest.TestCase):
                 report["comparisons"][0]["metrics"]["custom_score"]["status"],
                 "regression",
             )
+
+    def test_compare_reports_bootstrap_uncertainty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baseline = tmp_path / "baseline_run"
+            candidate = tmp_path / "candidate_run"
+            report_path = tmp_path / "report.json"
+
+            _write_run(
+                baseline,
+                game="hanoi",
+                spec="easy-v1-stateful",
+                interaction_mode="stateful",
+                provider="openrouter",
+                model="m1",
+                overall={"solve_rate": 0.0},
+                episodes=[
+                    {"episode_id": i, "variant_id": "v", "solved": False}
+                    for i in range(20)
+                ],
+            )
+            _write_run(
+                candidate,
+                game="hanoi",
+                spec="easy-v1-stateful",
+                interaction_mode="stateful",
+                provider="openrouter",
+                model="m1",
+                overall={"solve_rate": 1.0},
+                episodes=[
+                    {"episode_id": i, "variant_id": "v", "solved": True}
+                    for i in range(20)
+                ],
+            )
+
+            rc = _run_compare(
+                [
+                    "--baseline",
+                    str(baseline),
+                    "--candidate",
+                    str(candidate),
+                    "--bootstrap-samples",
+                    "300",
+                    "--bootstrap-metric",
+                    "solve_rate",
+                    "--report-file",
+                    str(report_path),
+                ]
+            )
+            self.assertEqual(rc, 0)
+
+            report = json.loads(report_path.read_text())
+            self.assertTrue(report["bootstrap"]["enabled"])
+            self.assertEqual(report["bootstrap"]["samples"], 300)
+            solve_rate_bootstrap = report["comparisons"][0]["bootstrap"]["solve_rate"]
+            self.assertEqual(solve_rate_bootstrap["status"], "ok")
+            self.assertTrue(solve_rate_bootstrap["significant"])
+            self.assertGreater(solve_rate_bootstrap["ci_low"], 0.0)
 
 
 if __name__ == "__main__":

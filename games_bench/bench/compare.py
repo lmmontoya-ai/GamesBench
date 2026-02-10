@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import random
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -161,6 +163,184 @@ def _to_float(value: Any) -> float | None:
             return None
         return v
     return None
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Invalid JSONL file: {path}:{lineno}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SystemExit(f"Invalid JSONL row at {path}:{lineno}: expected object")
+        rows.append(payload)
+    return rows
+
+
+def _extract_binary_metric(row: dict[str, Any], key: str) -> float | None:
+    value = row.get(key)
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    return 1.0 if numeric != 0.0 else 0.0
+
+
+def _extract_numeric_metric(row: dict[str, Any], key: str) -> float | None:
+    return _to_float(row.get(key))
+
+
+_BOOTSTRAP_EXTRACTORS: dict[str, Callable[[dict[str, Any]], float | None]] = {
+    "solve_rate": lambda row: _extract_binary_metric(row, "solved"),
+    "deadlock_rate": lambda row: _extract_binary_metric(row, "deadlocked"),
+    "avg_illegal_moves": lambda row: _extract_numeric_metric(row, "illegal_moves"),
+    "avg_tool_calls": lambda row: _extract_numeric_metric(row, "tool_calls"),
+    "avg_moves": lambda row: _extract_numeric_metric(row, "move_count"),
+    "avg_pushes": lambda row: _extract_numeric_metric(row, "push_count"),
+    "avg_boxes_on_goals_ratio": lambda row: _extract_numeric_metric(
+        row, "boxes_on_goals_ratio"
+    ),
+    "avg_move_ratio": lambda row: _extract_numeric_metric(row, "move_ratio"),
+    "avg_push_ratio": lambda row: _extract_numeric_metric(row, "push_ratio"),
+}
+
+
+def _extract_bootstrap_series(
+    episodes: list[dict[str, Any]],
+    *,
+    metric_name: str,
+) -> list[float]:
+    extractor = _BOOTSTRAP_EXTRACTORS.get(metric_name)
+    if extractor is None:
+        return []
+    values: list[float] = []
+    for row in episodes:
+        value = extractor(row)
+        if value is None:
+            continue
+        values.append(float(value))
+    return values
+
+
+def _quantile(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        raise ValueError("quantile requires at least one value")
+    q = max(0.0, min(1.0, q))
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    position = q * (len(sorted_values) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = position - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _bootstrap_difference(
+    baseline_values: list[float],
+    candidate_values: list[float],
+    *,
+    samples: int,
+    confidence: float,
+    rng: random.Random,
+) -> dict[str, Any]:
+    if samples < 1:
+        raise ValueError("samples must be >= 1")
+    if not baseline_values or not candidate_values:
+        raise ValueError("baseline/candidate values must be non-empty")
+    n_baseline = len(baseline_values)
+    n_candidate = len(candidate_values)
+    deltas: list[float] = []
+    for _ in range(samples):
+        baseline_mean = (
+            sum(baseline_values[rng.randrange(n_baseline)] for _ in range(n_baseline))
+            / n_baseline
+        )
+        candidate_mean = (
+            sum(
+                candidate_values[rng.randrange(n_candidate)] for _ in range(n_candidate)
+            )
+            / n_candidate
+        )
+        deltas.append(candidate_mean - baseline_mean)
+
+    deltas.sort()
+    alpha = 1.0 - confidence
+    ci_low = _quantile(deltas, alpha / 2.0)
+    ci_high = _quantile(deltas, 1.0 - (alpha / 2.0))
+    frac_le_zero = sum(1 for delta in deltas if delta <= 0.0) / samples
+    frac_ge_zero = sum(1 for delta in deltas if delta >= 0.0) / samples
+    p_two_sided = min(1.0, 2.0 * min(frac_le_zero, frac_ge_zero))
+
+    observed_delta = (sum(candidate_values) / n_candidate) - (
+        sum(baseline_values) / n_baseline
+    )
+    return {
+        "status": "ok",
+        "baseline_n": n_baseline,
+        "candidate_n": n_candidate,
+        "observed_delta": observed_delta,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "confidence_level": confidence,
+        "p_value_two_sided": p_two_sided,
+        "significant": bool(ci_low > 0.0 or ci_high < 0.0),
+    }
+
+
+def _bootstrap_metrics_for_pair(
+    baseline: RunRecord,
+    candidate: RunRecord,
+    *,
+    metric_names: list[str],
+    samples: int,
+    confidence: float,
+    seed: int,
+) -> dict[str, Any]:
+    baseline_rows = _read_jsonl(baseline.run_dir / "episodes.jsonl")
+    candidate_rows = _read_jsonl(candidate.run_dir / "episodes.jsonl")
+    if not baseline_rows or not candidate_rows:
+        return {
+            metric_name: {
+                "status": "missing",
+                "reason": "episodes.jsonl missing or empty for baseline/candidate run",
+            }
+            for metric_name in metric_names
+        }
+
+    rng = random.Random(seed)
+    results: dict[str, Any] = {}
+    for metric_name in metric_names:
+        baseline_values = _extract_bootstrap_series(
+            baseline_rows,
+            metric_name=metric_name,
+        )
+        candidate_values = _extract_bootstrap_series(
+            candidate_rows,
+            metric_name=metric_name,
+        )
+        if not baseline_values or not candidate_values:
+            results[metric_name] = {
+                "status": "missing",
+                "reason": "metric unsupported for bootstrap or values missing in episodes",
+            }
+            continue
+        results[metric_name] = _bootstrap_difference(
+            baseline_values,
+            candidate_values,
+            samples=samples,
+            confidence=confidence,
+            rng=rng,
+        )
+    return results
 
 
 def _compare_metric(
@@ -405,7 +585,16 @@ def compare_runs(
     baseline_path: Path,
     candidate_path: Path,
     thresholds_path: Path | None,
+    bootstrap_samples: int = 0,
+    bootstrap_confidence: float = 0.95,
+    bootstrap_seed: int = 0,
+    bootstrap_metrics: list[str] | None = None,
 ) -> dict[str, Any]:
+    if bootstrap_samples < 0:
+        raise SystemExit("bootstrap_samples must be >= 0")
+    if not (0.0 < bootstrap_confidence < 1.0):
+        raise SystemExit("bootstrap_confidence must be within (0, 1).")
+
     baseline_records = _discover_run_records(baseline_path)
     candidate_records = _discover_run_records(candidate_path)
     compare_metric_hooks = _resolve_compare_metric_hooks(
@@ -481,6 +670,26 @@ def compare_runs(
             else:
                 total_metric_checks += 1
 
+        bootstrap_payload: dict[str, Any] = {}
+        if bootstrap_samples > 0:
+            target_metrics = (
+                sorted(set(bootstrap_metrics)) if bootstrap_metrics else metric_names
+            )
+            if target_metrics:
+                seed_material = (
+                    f"{baseline.run_dir.resolve()}::{candidate.run_dir.resolve()}"
+                ).encode("utf-8")
+                seed_hash = int(hashlib.sha256(seed_material).hexdigest()[:12], 16)
+                pair_seed = int(seed_hash + int(bootstrap_seed))
+                bootstrap_payload = _bootstrap_metrics_for_pair(
+                    baseline,
+                    candidate,
+                    metric_names=target_metrics,
+                    samples=int(bootstrap_samples),
+                    confidence=float(bootstrap_confidence),
+                    seed=pair_seed,
+                )
+
         violations = _gating_violations(baseline, candidate, gating)
         total_gating_violations += len(violations)
         regression_count += len(violations)
@@ -497,6 +706,7 @@ def compare_runs(
                 "baseline_run_dir": str(baseline.run_dir),
                 "candidate_run_dir": str(candidate.run_dir),
                 "metrics": metric_results,
+                "bootstrap": bootstrap_payload,
                 "gating_violations": violations,
                 "regression_count": regression_count,
             }
@@ -511,6 +721,13 @@ def compare_runs(
         "candidate_path": str(candidate_path.resolve()),
         "thresholds_path": str(thresholds_path.resolve()) if thresholds_path else None,
         "thresholds": thresholds,
+        "bootstrap": {
+            "enabled": bool(bootstrap_samples > 0),
+            "samples": int(bootstrap_samples),
+            "confidence": float(bootstrap_confidence),
+            "seed": int(bootstrap_seed),
+            "metrics": sorted(set(bootstrap_metrics)) if bootstrap_metrics else None,
+        },
         "summary": {
             "pairs": len(comparisons),
             "metric_checks": total_metric_checks,
@@ -543,6 +760,23 @@ def _format_metric_line(metric_name: str, payload: dict[str, Any]) -> str:
     if reason:
         parts.append(f"reason={reason}")
     return " | ".join(parts)
+
+
+def _format_bootstrap_line(metric_name: str, payload: dict[str, Any]) -> str:
+    status = str(payload.get("status", "missing"))
+    if status != "ok":
+        reason = payload.get("reason")
+        suffix = f" reason={reason}" if reason else ""
+        return f"{metric_name}: status={status}{suffix}"
+    ci_low = payload.get("ci_low")
+    ci_high = payload.get("ci_high")
+    p_value = payload.get("p_value_two_sided")
+    observed_delta = payload.get("observed_delta")
+    return (
+        f"{metric_name}: delta={observed_delta:.6f} "
+        f"ci=[{ci_low:.6f}, {ci_high:.6f}] "
+        f"p={p_value:.6f} significant={bool(payload.get('significant'))}"
+    )
 
 
 def _print_human_report(report: dict[str, Any]) -> None:
@@ -590,6 +824,13 @@ def _print_human_report(report: dict[str, Any]) -> None:
         metrics = comp.get("metrics", {})
         for metric_name in sorted(metrics.keys()):
             print("  " + _format_metric_line(metric_name, metrics[metric_name]))
+        bootstrap = comp.get("bootstrap") or {}
+        if bootstrap:
+            print("  Bootstrap:")
+            for metric_name in sorted(bootstrap.keys()):
+                print(
+                    "    " + _format_bootstrap_line(metric_name, bootstrap[metric_name])
+                )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -621,6 +862,37 @@ def build_parser() -> argparse.ArgumentParser:
         default="compare_report.json",
         help="Path to write machine-readable compare report JSON.",
     )
+    parser.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=0,
+        help=(
+            "Number of bootstrap resamples for uncertainty reporting. "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--bootstrap-confidence",
+        type=float,
+        default=0.95,
+        help="Confidence level for bootstrap intervals (default: 0.95).",
+    )
+    parser.add_argument(
+        "--bootstrap-seed",
+        type=int,
+        default=0,
+        help="Base RNG seed for bootstrap resampling.",
+    )
+    parser.add_argument(
+        "--bootstrap-metric",
+        action="append",
+        dest="bootstrap_metrics",
+        default=None,
+        help=(
+            "Metric name to bootstrap (repeatable). Defaults to compared metrics "
+            "when omitted."
+        ),
+    )
     return parser
 
 
@@ -632,6 +904,10 @@ def main(argv: list[str] | None = None) -> int:
         baseline_path=Path(args.baseline),
         candidate_path=Path(args.candidate),
         thresholds_path=(Path(args.thresholds) if args.thresholds else None),
+        bootstrap_samples=int(args.bootstrap_samples),
+        bootstrap_confidence=float(args.bootstrap_confidence),
+        bootstrap_seed=int(args.bootstrap_seed),
+        bootstrap_metrics=list(args.bootstrap_metrics or []),
     )
 
     report_file = Path(args.report_file)

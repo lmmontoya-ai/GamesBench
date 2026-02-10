@@ -46,7 +46,7 @@ class TestSokobanPrompts(unittest.TestCase):
     def test_prompt_variants(self) -> None:
         minimal = instructions_for_variant("minimal")
         self.assertEqual(minimal, default_instructions())
-        self.assertIn("exactly one tool call", minimal)
+        self.assertIn("number of tool calls needed", minimal)
         self.assertIn("all boxes are on goals at the same time", minimal)
         self.assertIn("If state query tools are available", minimal)
         for symbol in ("`#`", "` `", "`@`", "`+`", "`$`", "`*`", "`.`"):
