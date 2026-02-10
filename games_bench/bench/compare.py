@@ -7,10 +7,11 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 REPORT_VERSION = "compare-v1"
+CompareMetricHook = Callable[[dict[str, Any]], dict[str, float]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +355,51 @@ def _keyed_records_map(
     return result
 
 
+def _resolve_compare_metric_hooks(
+    records: list[RunRecord],
+) -> dict[str, CompareMetricHook | None]:
+    game_names = sorted({record.game for record in records if record.game})
+    if not game_names:
+        return {}
+
+    from games_bench.bench.registry import get_benchmark, load_builtin_benchmarks
+
+    load_builtin_benchmarks()
+    hooks: dict[str, CompareMetricHook | None] = {}
+    for game_name in game_names:
+        try:
+            benchmark = get_benchmark(game_name)
+        except KeyError:
+            hooks[game_name] = None
+            continue
+        hooks[game_name] = benchmark.compare_metrics
+    return hooks
+
+
+def _extract_metrics_from_summary(
+    record: RunRecord,
+    *,
+    hook: CompareMetricHook | None,
+    side: str,
+) -> dict[str, Any]:
+    if hook is None:
+        payload = record.summary.get("overall", {})
+        if not isinstance(payload, dict):
+            raise SystemExit(
+                "Invalid summary format: expected object at summary.overall "
+                f"for {side} run {record.run_dir}"
+            )
+        return dict(payload)
+
+    metrics = hook(record.summary)
+    if not isinstance(metrics, dict):
+        raise SystemExit(
+            "Invalid compare_metrics hook result for game "
+            f"{record.game!r}: expected object, got {type(metrics).__name__}"
+        )
+    return {str(name): value for name, value in metrics.items()}
+
+
 def compare_runs(
     *,
     baseline_path: Path,
@@ -362,6 +408,9 @@ def compare_runs(
 ) -> dict[str, Any]:
     baseline_records = _discover_run_records(baseline_path)
     candidate_records = _discover_run_records(candidate_path)
+    compare_metric_hooks = _resolve_compare_metric_hooks(
+        baseline_records + candidate_records
+    )
 
     thresholds = _load_thresholds(thresholds_path)
     metric_rules = thresholds.get("metrics") or {}
@@ -389,15 +438,16 @@ def compare_runs(
     total_gating_violations = 0
 
     for baseline, candidate in matched_pairs:
-        baseline_overall = baseline.summary.get("overall", {})
-        candidate_overall = candidate.summary.get("overall", {})
-        if not isinstance(baseline_overall, dict) or not isinstance(
-            candidate_overall, dict
-        ):
-            raise SystemExit(
-                "Invalid summary format: expected object at summary.overall "
-                f"for runs {baseline.run_dir} and {candidate.run_dir}"
-            )
+        baseline_overall = _extract_metrics_from_summary(
+            baseline,
+            hook=compare_metric_hooks.get(baseline.game),
+            side="baseline",
+        )
+        candidate_overall = _extract_metrics_from_summary(
+            candidate,
+            hook=compare_metric_hooks.get(candidate.game),
+            side="candidate",
+        )
 
         if metric_rules:
             metric_names = sorted(metric_rules.keys())

@@ -138,10 +138,23 @@ def run_episode_jobs(
     completed_ids: set[int] = set()
 
     if resume:
+        if not out_dir.exists():
+            raise SystemExit(
+                f"Resume requested but run directory does not exist: {out_dir}"
+            )
         recovered_episodes = recover_jsonl_records(episodes_path, strict=strict_resume)
         recover_text_log(traces_path, strict=strict_resume)
         if record_raw:
             recover_text_log(raw_path, strict=strict_resume)
+
+        has_existing_artifacts = (
+            state_file.exists() or episodes_path.exists() or traces_path.exists()
+        )
+        if not has_existing_artifacts:
+            raise SystemExit(
+                "Resume requested but no existing run artifacts were found. "
+                f"Expected checkpoint or JSONL files under {out_dir}."
+            )
 
         for episode in recovered_episodes:
             episode_id = _safe_int(episode.get("episode_id"))
@@ -155,6 +168,11 @@ def run_episode_jobs(
 
         state = load_execution_state(state_file)
         if state is None:
+            if not completed_ids:
+                raise SystemExit(
+                    "Resume requested but execution_state.json is missing and no "
+                    "recoverable committed episodes were found."
+                )
             state = build_execution_state(
                 run_id=run_id,
                 job_plan_hash=job_plan_hash,

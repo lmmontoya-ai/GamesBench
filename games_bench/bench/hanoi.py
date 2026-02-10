@@ -19,7 +19,7 @@ from games_bench.bench.common import (
     resolve_spec_name,
 )
 from games_bench.bench.executor import run_episode_jobs
-from games_bench.bench.lineage import build_run_manifest, write_run_manifest
+from games_bench.bench.lineage import ensure_run_manifest, make_lineage_event
 from games_bench.bench.scoring import build_summary_document
 from games_bench.bench.taxonomy import annotate_episode_with_taxonomy
 from games_bench.games.hanoi.adapter import HanoiGameAdapter
@@ -667,6 +667,21 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 def score_episodes(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     return _compute_metrics(episodes)
+
+
+def compare_metrics(summary: dict[str, Any]) -> dict[str, float]:
+    overall = summary.get("overall", summary)
+    if not isinstance(overall, dict):
+        return {}
+    metrics: dict[str, float] = {}
+    for name, value in overall.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            candidate = float(value)
+            if math.isfinite(candidate):
+                metrics[str(name)] = candidate
+    return metrics
 
 
 def add_hanoi_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1480,12 +1495,29 @@ def run_batch(
             run_id = default_run_id
 
         out_dir = Path(out_dir_base) / provider_name / model_slug / run_id
-        if out_dir.exists() and not resume and any(out_dir.iterdir()):
-            raise SystemExit(
-                f"Run directory already exists: {out_dir}. "
-                "Use --resume to continue or choose a different --run-id."
-            )
-        out_dir.mkdir(parents=True, exist_ok=True)
+        run_config_path = out_dir / "run_config.json"
+        if resume:
+            if not out_dir.exists():
+                raise SystemExit(
+                    "Resume requested but run directory does not exist: "
+                    f"{out_dir}. Check --run-id."
+                )
+            if not out_dir.is_dir():
+                raise SystemExit(
+                    f"Resume requested but path is not a directory: {out_dir}"
+                )
+            if not run_config_path.exists():
+                raise SystemExit(
+                    "Resume requested but run_config.json is missing in "
+                    f"{out_dir}. Check --run-id or rerun without --resume."
+                )
+        else:
+            if out_dir.exists() and any(out_dir.iterdir()):
+                raise SystemExit(
+                    f"Run directory already exists: {out_dir}. "
+                    "Use --resume to continue or choose a different --run-id."
+                )
+            out_dir.mkdir(parents=True, exist_ok=True)
 
         provider_semaphore = threading.BoundedSemaphore(max_inflight_provider)
         provider_local = threading.local()
@@ -1528,9 +1560,7 @@ def run_batch(
             for n_pegs in sorted(set(case.n_pegs for case in scenarios))
         }
 
-        run_config_path = out_dir / "run_config.json"
-        run_manifest_path = out_dir / "run_manifest.json"
-        if resume and run_config_path.exists():
+        if resume:
             run_config = json.loads(run_config_path.read_text())
             if strict_resume:
                 for key in (
@@ -1614,14 +1644,20 @@ def run_batch(
             }
             run_config_path.write_text(json.dumps(run_config, indent=2))
 
-        if not run_manifest_path.exists():
-            write_run_manifest(
-                out_dir,
-                build_run_manifest(
-                    run_config=run_config,
-                    game_config=config,
-                ),
-            )
+        ensure_run_manifest(
+            out_dir,
+            run_config=run_config,
+            game_config=config,
+            parent_run_id=(str(run_config.get("run_id") or run_id) if resume else None),
+            lineage_event=(
+                make_lineage_event(
+                    "resume",
+                    payload={"run_id": str(run_config.get("run_id") or run_id)},
+                )
+                if resume
+                else None
+            ),
+        )
 
         jobs: list[HanoiEpisodeJob] = []
         episode_id = 0
