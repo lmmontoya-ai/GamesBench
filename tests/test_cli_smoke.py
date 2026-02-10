@@ -249,6 +249,61 @@ class TestCliSmoke(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(len(payload["run_dirs"]), 1)
 
+    def test_cli_compare_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline"
+            candidate = Path(tmp) / "candidate"
+            report = Path(tmp) / "compare_report.json"
+
+            baseline.mkdir(parents=True, exist_ok=True)
+            candidate.mkdir(parents=True, exist_ok=True)
+            (baseline / "run_config.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "b1",
+                        "game": "hanoi",
+                        "spec": "easy-v1-stateful",
+                        "interaction_mode": "stateful",
+                        "provider": "openrouter",
+                        "model": "m1",
+                    }
+                )
+            )
+            (baseline / "summary.json").write_text(
+                json.dumps({"overall": {"solve_rate": 0.5}, "variants": {}})
+            )
+            (candidate / "run_config.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "c1",
+                        "game": "hanoi",
+                        "spec": "easy-v1-stateful",
+                        "interaction_mode": "stateful",
+                        "provider": "openrouter",
+                        "model": "m1",
+                    }
+                )
+            )
+            (candidate / "summary.json").write_text(
+                json.dumps({"overall": {"solve_rate": 0.6}, "variants": {}})
+            )
+
+            with patch.object(sys, "argv", ["games-bench"]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = bench_cli.main(
+                        [
+                            "compare",
+                            "--baseline",
+                            str(baseline),
+                            "--candidate",
+                            str(candidate),
+                            "--report-file",
+                            str(report),
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            self.assertTrue(report.exists())
+
     def test_cli_run_missing_provider_errors(self) -> None:
         with patch.object(sys, "argv", ["games-bench"]):
             with (
