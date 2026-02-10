@@ -51,6 +51,33 @@ def add_common_batch_arguments(
         help="Number of episode workers to run concurrently (default from config or 1).",
     )
     parser.add_argument(
+        "--run-id",
+        default=None,
+        help=(
+            "Stable run identifier to reuse output directory naming. "
+            "Required when using --resume."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an interrupted run from existing artifacts.",
+    )
+    parser.add_argument(
+        "--strict-resume",
+        action="store_true",
+        help="Fail resume if checkpoint/job plan metadata do not match exactly.",
+    )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help=(
+            "Persist execution checkpoint every N committed episodes "
+            "(default from config or 1)."
+        ),
+    )
+    parser.add_argument(
         "--max-inflight-provider",
         type=int,
         default=None,

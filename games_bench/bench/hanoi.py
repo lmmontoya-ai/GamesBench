@@ -7,7 +7,6 @@ import math
 import os
 import platform
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +18,7 @@ from games_bench.bench.common import (
     resolve_scoring_settings,
     resolve_spec_name,
 )
+from games_bench.bench.executor import run_episode_jobs
 from games_bench.bench.lineage import build_run_manifest, write_run_manifest
 from games_bench.bench.scoring import build_summary_document
 from games_bench.bench.taxonomy import annotate_episode_with_taxonomy
@@ -1148,40 +1148,6 @@ def _run_hanoi_episode_job(
     )
 
 
-def _commit_hanoi_episode_output(
-    output: HanoiEpisodeOutput,
-    *,
-    episodes: list[dict[str, Any]],
-    ep_file: Any,
-    trace_file: Any,
-    raw_file: Any,
-    record: bool,
-    recordings_dir: Path,
-    progress_reporter: Any | None = None,
-) -> None:
-    episode = dict(output.episode)
-    if record and output.recording is not None:
-        recording_path = recordings_dir / f"episode_{output.episode_id:04d}.json"
-        recording_path.write_text(json.dumps(output.recording, indent=2))
-        episode["recording_file"] = str(recording_path)
-    episodes.append(episode)
-    ep_file.write(json.dumps(episode) + "\n")
-    trace_file.write(
-        json.dumps(
-            {
-                "episode_id": output.episode_id,
-                "variant_id": output.variant_id,
-                "events": output.events,
-            }
-        )
-        + "\n"
-    )
-    for line in output.raw_lines:
-        raw_file.write(line + "\n")
-    if progress_reporter is not None:
-        progress_reporter.on_episode_complete(episode)
-
-
 def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
     base_str = str(base)
     if "{game}" in base_str:
@@ -1190,6 +1156,20 @@ def _resolve_out_dir_base(base: str | Path, game_name: str) -> Path:
     if path.name == game_name:
         return path
     return path / game_name
+
+
+def _resolve_checkpoint_interval(
+    args: argparse.Namespace, config: dict[str, Any]
+) -> int:
+    raw = (
+        getattr(args, "checkpoint_interval", None)
+        if getattr(args, "checkpoint_interval", None) is not None
+        else config.get("checkpoint_interval", 1)
+    )
+    value = int(raw)
+    if value < 1:
+        raise SystemExit(f"checkpoint_interval must be >= 1, got {value}")
+    return value
 
 
 def run_batch(
@@ -1477,13 +1457,34 @@ def run_batch(
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id_override = getattr(args, "run_id", None) or config.get("run_id")
+    resume = bool(getattr(args, "resume", False)) or bool(config.get("resume", False))
+    strict_resume = bool(getattr(args, "strict_resume", False)) or bool(
+        config.get("strict_resume", False)
+    )
+    checkpoint_interval = _resolve_checkpoint_interval(args, config)
+    if resume and not run_id_override:
+        raise SystemExit("--resume requires --run-id (or config run_id).")
 
     run_dirs: list[Path] = []
     for model_name in models:
         model_slug = model_name.replace("/", "_").replace(":", "_")
-        run_id = f"{timestamp}_{provider_name}_{model_slug}"
+        default_run_id = f"{timestamp}_{provider_name}_{model_slug}"
+        if run_id_override:
+            run_id = (
+                str(run_id_override)
+                if len(models) == 1
+                else f"{run_id_override}_{provider_name}_{model_slug}"
+            )
+        else:
+            run_id = default_run_id
 
         out_dir = Path(out_dir_base) / provider_name / model_slug / run_id
+        if out_dir.exists() and not resume and any(out_dir.iterdir()):
+            raise SystemExit(
+                f"Run directory already exists: {out_dir}. "
+                "Use --resume to continue or choose a different --run-id."
+            )
         out_dir.mkdir(parents=True, exist_ok=True)
 
         provider_semaphore = threading.BoundedSemaphore(max_inflight_provider)
@@ -1527,74 +1528,101 @@ def run_batch(
             for n_pegs in sorted(set(case.n_pegs for case in scenarios))
         }
 
-        run_config = {
-            "run_id": run_id,
-            "timestamp": timestamp,
-            "spec_base": spec_base,
-            "spec": spec_name,
-            "interaction_mode": interaction_mode,
-            "stateless": stateless,
-            "game": game_name,
-            "provider": provider_name,
-            "model": model_name,
-            "n_pegs": n_pegs_list,
-            "n_disks": n_disks_list,
-            "start_peg": start_peg_value,
-            "goal_peg": goal_peg_value,
-            "cases": [
-                {
-                    "n_pegs": case.n_pegs,
-                    "n_disks": case.n_disks,
-                    "start_peg": case.start_peg,
-                    "goal_peg": case.goal_peg,
-                }
-                for case in scenarios
-            ],
-            "start_goal_by_n_pegs": {
-                key: {"start_peg": value[0], "goal_peg": value[1]}
-                for key, value in resolved_start_goal_by_n_pegs.items()
-            },
-            "runs_per_variant": runs_per_variant,
-            "max_turns": max_turns,
-            "parallelism": parallelism,
-            "max_inflight_provider": max_inflight_provider,
-            "stagnation_patience": stagnation_patience,
-            "optimal_turn_cap_multiplier": optimal_turn_cap_multiplier,
-            "prompt_variants": [asdict(v) for v in selected_prompt_variants],
-            "tool_variants": [asdict(v) for v in selected_tool_variants],
-            "tool_schemas": full_tool_schemas,
-            "tool_schemas_by_variant": tool_schemas_by_variant,
-            "tool_schemas_by_n_pegs": tool_schemas_by_n_pegs,
-            "state_format": state_format,
-            "image_size": f"{image_size[0]}x{image_size[1]}",
-            "image_labels": image_labels,
-            "image_background": image_background,
-            "record_raw": record_raw,
-            "record_provider_raw": record_provider_raw,
-            "provider_retries": provider_retries,
-            "provider_backoff": provider_backoff,
-            "stream_debug": stream_debug,
-            "score_enabled": score_enabled,
-            "score_version": score_version,
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-        }
-        (out_dir / "run_config.json").write_text(json.dumps(run_config, indent=2))
-        write_run_manifest(
-            out_dir,
-            build_run_manifest(
-                run_config=run_config,
-                game_config=config,
-            ),
-        )
+        run_config_path = out_dir / "run_config.json"
+        run_manifest_path = out_dir / "run_manifest.json"
+        if resume and run_config_path.exists():
+            run_config = json.loads(run_config_path.read_text())
+            if strict_resume:
+                for key in (
+                    "run_id",
+                    "game",
+                    "provider",
+                    "model",
+                    "spec",
+                    "interaction_mode",
+                    "stateless",
+                ):
+                    current = {
+                        "run_id": run_id,
+                        "game": game_name,
+                        "provider": provider_name,
+                        "model": model_name,
+                        "spec": spec_name,
+                        "interaction_mode": interaction_mode,
+                        "stateless": stateless,
+                    }[key]
+                    if run_config.get(key) != current:
+                        raise SystemExit(
+                            f"Strict resume mismatch for '{key}': "
+                            f"existing={run_config.get(key)!r}, current={current!r}"
+                        )
+        else:
+            run_config = {
+                "run_id": run_id,
+                "timestamp": timestamp,
+                "spec_base": spec_base,
+                "spec": spec_name,
+                "interaction_mode": interaction_mode,
+                "stateless": stateless,
+                "game": game_name,
+                "provider": provider_name,
+                "model": model_name,
+                "n_pegs": n_pegs_list,
+                "n_disks": n_disks_list,
+                "start_peg": start_peg_value,
+                "goal_peg": goal_peg_value,
+                "cases": [
+                    {
+                        "n_pegs": case.n_pegs,
+                        "n_disks": case.n_disks,
+                        "start_peg": case.start_peg,
+                        "goal_peg": case.goal_peg,
+                    }
+                    for case in scenarios
+                ],
+                "start_goal_by_n_pegs": {
+                    key: {"start_peg": value[0], "goal_peg": value[1]}
+                    for key, value in resolved_start_goal_by_n_pegs.items()
+                },
+                "runs_per_variant": runs_per_variant,
+                "max_turns": max_turns,
+                "parallelism": parallelism,
+                "max_inflight_provider": max_inflight_provider,
+                "stagnation_patience": stagnation_patience,
+                "optimal_turn_cap_multiplier": optimal_turn_cap_multiplier,
+                "prompt_variants": [asdict(v) for v in selected_prompt_variants],
+                "tool_variants": [asdict(v) for v in selected_tool_variants],
+                "tool_schemas": full_tool_schemas,
+                "tool_schemas_by_variant": tool_schemas_by_variant,
+                "tool_schemas_by_n_pegs": tool_schemas_by_n_pegs,
+                "state_format": state_format,
+                "image_size": f"{image_size[0]}x{image_size[1]}",
+                "image_labels": image_labels,
+                "image_background": image_background,
+                "record_raw": record_raw,
+                "record_provider_raw": record_provider_raw,
+                "provider_retries": provider_retries,
+                "provider_backoff": provider_backoff,
+                "stream_debug": stream_debug,
+                "score_enabled": score_enabled,
+                "score_version": score_version,
+                "resume": resume,
+                "strict_resume": strict_resume,
+                "checkpoint_interval": checkpoint_interval,
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            }
+            run_config_path.write_text(json.dumps(run_config, indent=2))
 
-        episodes_path = out_dir / "episodes.jsonl"
-        traces_path = out_dir / "traces.jsonl"
-        recordings_dir = out_dir / "recordings"
-        if record:
-            recordings_dir.mkdir(parents=True, exist_ok=True)
+        if not run_manifest_path.exists():
+            write_run_manifest(
+                out_dir,
+                build_run_manifest(
+                    run_config=run_config,
+                    game_config=config,
+                ),
+            )
 
-        episodes: list[dict[str, Any]] = []
         jobs: list[HanoiEpisodeJob] = []
         episode_id = 0
         for case in scenarios:
@@ -1617,68 +1645,40 @@ def run_batch(
                         )
                         episode_id += 1
 
-        raw_path = out_dir / "raw_generations.jsonl"
-        with (
-            episodes_path.open("w") as ep_file,
-            traces_path.open("w") as trace_file,
-            raw_path.open("w") if record_raw else open(os.devnull, "w") as raw_file,
-        ):
-            pending_by_episode: dict[int, HanoiEpisodeOutput] = {}
-            next_episode_id = 0
+        def run_job(job: HanoiEpisodeJob) -> HanoiEpisodeOutput:
+            return _run_hanoi_episode_job(
+                job,
+                provider=get_provider(),
+                provider_name=provider_name,
+                model_name=model_name,
+                spec_name=spec_name,
+                interaction_mode=interaction_mode,
+                stateless=stateless,
+                max_turns=max_turns,
+                optimal_turn_cap_multiplier=optimal_turn_cap_multiplier,
+                state_format=state_format,
+                image_size=image_size,
+                image_labels=image_labels,
+                image_background=image_background,
+                record_provider_raw=record_provider_raw,
+                record_raw=record_raw,
+                record=record,
+                stagnation_patience=stagnation_patience,
+            )
 
-            def run_job(job: HanoiEpisodeJob) -> HanoiEpisodeOutput:
-                return _run_hanoi_episode_job(
-                    job,
-                    provider=get_provider(),
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    spec_name=spec_name,
-                    interaction_mode=interaction_mode,
-                    stateless=stateless,
-                    max_turns=max_turns,
-                    optimal_turn_cap_multiplier=optimal_turn_cap_multiplier,
-                    state_format=state_format,
-                    image_size=image_size,
-                    image_labels=image_labels,
-                    image_background=image_background,
-                    record_provider_raw=record_provider_raw,
-                    record_raw=record_raw,
-                    record=record,
-                    stagnation_patience=stagnation_patience,
-                )
-
-            if parallelism == 1:
-                for job in jobs:
-                    output = run_job(job)
-                    _commit_hanoi_episode_output(
-                        output,
-                        episodes=episodes,
-                        ep_file=ep_file,
-                        trace_file=trace_file,
-                        raw_file=raw_file,
-                        record=record,
-                        recordings_dir=recordings_dir,
-                        progress_reporter=progress_reporter,
-                    )
-            else:
-                with ThreadPoolExecutor(max_workers=parallelism) as executor:
-                    future_map = {executor.submit(run_job, job): job for job in jobs}
-                    for future in as_completed(future_map):
-                        output = future.result()
-                        pending_by_episode[output.episode_id] = output
-                        while next_episode_id in pending_by_episode:
-                            ordered = pending_by_episode.pop(next_episode_id)
-                            _commit_hanoi_episode_output(
-                                ordered,
-                                episodes=episodes,
-                                ep_file=ep_file,
-                                trace_file=trace_file,
-                                raw_file=raw_file,
-                                record=record,
-                                recordings_dir=recordings_dir,
-                                progress_reporter=progress_reporter,
-                            )
-                            next_episode_id += 1
+        episodes = run_episode_jobs(
+            out_dir=out_dir,
+            run_id=str(run_config.get("run_id", run_id)),
+            jobs=jobs,
+            run_job=run_job,
+            parallelism=parallelism,
+            record=record,
+            record_raw=record_raw,
+            progress_reporter=progress_reporter,
+            resume=resume,
+            strict_resume=strict_resume,
+            checkpoint_interval=checkpoint_interval,
+        )
 
         if score_enabled:
             summary = build_summary_document(
