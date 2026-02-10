@@ -6,8 +6,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from games_bench.bench import compare
+from games_bench.bench.registry import BenchSpec
 
 
 def _write_run(
@@ -519,6 +521,100 @@ class TestCompareCli(unittest.TestCase):
             self.assertEqual(report["summary"]["missing_metric_values"], 1)
             self.assertEqual(
                 report["comparisons"][0]["metrics"]["avg_turns"]["status"], "missing"
+            )
+
+    def test_compare_uses_registry_compare_metrics_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baseline = tmp_path / "baseline"
+            candidate = tmp_path / "candidate"
+            report_path = tmp_path / "report.json"
+            thresholds_path = tmp_path / "thresholds.json"
+
+            baseline.mkdir(parents=True, exist_ok=True)
+            candidate.mkdir(parents=True, exist_ok=True)
+            (baseline / "run_config.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "b",
+                        "game": "custom-game",
+                        "spec": "easy-v1-stateful",
+                        "interaction_mode": "stateful",
+                        "provider": "openrouter",
+                        "model": "m1",
+                    },
+                    indent=2,
+                )
+            )
+            (candidate / "run_config.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "c",
+                        "game": "custom-game",
+                        "spec": "easy-v1-stateful",
+                        "interaction_mode": "stateful",
+                        "provider": "openrouter",
+                        "model": "m1",
+                    },
+                    indent=2,
+                )
+            )
+            (baseline / "summary.json").write_text(
+                json.dumps({"stats": {"custom_score": 0.90}}, indent=2)
+            )
+            (candidate / "summary.json").write_text(
+                json.dumps({"stats": {"custom_score": 0.80}}, indent=2)
+            )
+            thresholds_path.write_text(
+                json.dumps(
+                    {
+                        "metrics": {
+                            "custom_score": {
+                                "direction": "higher_better",
+                                "max_drop": 0.01,
+                            }
+                        }
+                    }
+                )
+            )
+
+            spec = BenchSpec(
+                name="custom-game",
+                description="custom",
+                batch_runner=lambda _args, _cfg: [],
+                compare_metrics=lambda summary: {
+                    "custom_score": float(
+                        summary.get("stats", {}).get("custom_score", 0.0)
+                    )
+                },
+            )
+
+            with (
+                patch(
+                    "games_bench.bench.registry.load_builtin_benchmarks",
+                    return_value=None,
+                ),
+                patch("games_bench.bench.registry.get_benchmark", return_value=spec),
+            ):
+                rc = _run_compare(
+                    [
+                        "--baseline",
+                        str(baseline),
+                        "--candidate",
+                        str(candidate),
+                        "--thresholds",
+                        str(thresholds_path),
+                        "--report-file",
+                        str(report_path),
+                        "--fail-on-regression",
+                    ]
+                )
+            self.assertEqual(rc, 1)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["summary"]["regressions"], 1)
+            self.assertEqual(
+                report["comparisons"][0]["metrics"]["custom_score"]["status"],
+                "regression",
             )
 
 

@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 
+RUN_MANIFEST_VERSION = "v1"
+RUN_MANIFEST_FILENAME = "run_manifest.json"
+
+
 def _sha256_json(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -70,6 +74,10 @@ def _seed_lineage(run_config: dict[str, Any]) -> dict[str, Any] | None:
     return lineage or None
 
 
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def build_run_manifest(
     *,
     run_config: dict[str, Any],
@@ -86,7 +94,7 @@ def build_run_manifest(
     }
 
     return {
-        "run_manifest_version": "v1",
+        "run_manifest_version": RUN_MANIFEST_VERSION,
         "run_id": run_config.get("run_id"),
         "timestamp_utc": now.isoformat().replace("+00:00", "Z"),
         "created_at_unix": int(now.timestamp()),
@@ -114,7 +122,77 @@ def build_run_manifest(
     }
 
 
+def run_manifest_path(out_dir: Path) -> Path:
+    return out_dir / RUN_MANIFEST_FILENAME
+
+
+def read_run_manifest(out_dir: Path) -> dict[str, Any] | None:
+    path = run_manifest_path(out_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid run manifest JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Invalid run manifest format: expected object in {path}")
+    return data
+
+
+def make_lineage_event(
+    event_type: str,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": str(event_type),
+        "timestamp_utc": _now_iso_utc(),
+    }
+    if payload:
+        event["payload"] = dict(payload)
+    return event
+
+
+def ensure_run_manifest(
+    out_dir: Path,
+    *,
+    run_config: dict[str, Any],
+    game_config: dict[str, Any] | None,
+    parent_run_id: str | None = None,
+    lineage_event: dict[str, Any] | None = None,
+) -> Path:
+    existing = read_run_manifest(out_dir)
+    if existing is None:
+        manifest = build_run_manifest(
+            run_config=run_config,
+            game_config=game_config,
+            parent_run_id=parent_run_id,
+        )
+        if lineage_event is not None:
+            manifest["lineage_events"] = [dict(lineage_event)]
+        return write_run_manifest(out_dir, manifest)
+
+    manifest = dict(existing)
+    changed = False
+    if parent_run_id and not manifest.get("parent_run_id"):
+        manifest["parent_run_id"] = str(parent_run_id)
+        changed = True
+
+    if lineage_event is not None:
+        existing_events = manifest.get("lineage_events")
+        events: list[dict[str, Any]] = []
+        if isinstance(existing_events, list):
+            events = [dict(item) for item in existing_events if isinstance(item, dict)]
+        events.append(dict(lineage_event))
+        manifest["lineage_events"] = events
+        changed = True
+
+    if changed:
+        return write_run_manifest(out_dir, manifest)
+    return run_manifest_path(out_dir)
+
+
 def write_run_manifest(out_dir: Path, manifest: dict[str, Any]) -> Path:
-    path = out_dir / "run_manifest.json"
+    path = run_manifest_path(out_dir)
     path.write_text(json.dumps(manifest, indent=2))
     return path

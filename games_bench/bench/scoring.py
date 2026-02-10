@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from games_bench.bench.lineage import ensure_run_manifest, make_lineage_event
 from games_bench.bench.taxonomy import TAXONOMY_VERSION, annotate_episode_with_taxonomy
 
 
@@ -46,12 +47,71 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row) + "\n")
 
 
+def _coerce_failure_tags(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    raise SystemExit(
+        "episode_taxonomy hook must return failure tags as a list/tuple, "
+        "a (outcome_code, tags) tuple, or a dict payload."
+    )
+
+
 def enrich_episodes_with_taxonomy(
     episodes: list[dict[str, Any]],
     *,
     game_name: str,
+    run_config: dict[str, Any],
+    episode_taxonomy: (
+        Callable[
+            [dict[str, Any], dict[str, Any]],
+            dict[str, Any] | tuple[str, list[str]] | list[str],
+        ]
+        | None
+    ) = None,
 ) -> list[dict[str, Any]]:
-    return [annotate_episode_with_taxonomy(ep, game_name=game_name) for ep in episodes]
+    enriched_rows: list[dict[str, Any]] = []
+    run_config_payload = dict(run_config)
+    for episode in episodes:
+        base = annotate_episode_with_taxonomy(episode, game_name=game_name)
+        if episode_taxonomy is None:
+            enriched_rows.append(base)
+            continue
+
+        hook_value = episode_taxonomy(dict(episode), run_config_payload)
+        if isinstance(hook_value, dict):
+            merged = dict(base)
+            merged.update(hook_value)
+            merged["taxonomy_version"] = str(
+                merged.get("taxonomy_version") or TAXONOMY_VERSION
+            )
+            merged["outcome_code"] = str(
+                merged.get("outcome_code") or base["outcome_code"]
+            )
+            merged["failure_tags"] = _coerce_failure_tags(
+                merged.get("failure_tags", base["failure_tags"])
+            )
+            enriched_rows.append(merged)
+            continue
+
+        if isinstance(hook_value, tuple) and len(hook_value) == 2:
+            outcome_code, tags = hook_value
+            merged = dict(base)
+            merged["outcome_code"] = str(outcome_code)
+            merged["failure_tags"] = _coerce_failure_tags(tags)
+            enriched_rows.append(merged)
+            continue
+
+        if isinstance(hook_value, list):
+            merged = dict(base)
+            merged["failure_tags"] = _coerce_failure_tags(hook_value)
+            enriched_rows.append(merged)
+            continue
+
+        raise SystemExit(
+            "episode_taxonomy hook must return dict, (outcome_code, tags), or tags list."
+        )
+
+    return enriched_rows
 
 
 def build_summary_document(
@@ -62,8 +122,24 @@ def build_summary_document(
     score_version: str,
     game_name: str,
     scoring_input: dict[str, Any] | None = None,
+    episode_taxonomy: (
+        Callable[
+            [dict[str, Any], dict[str, Any]],
+            dict[str, Any] | tuple[str, list[str]] | list[str],
+        ]
+        | None
+    ) = None,
+    episodes_are_enriched: bool = False,
 ) -> dict[str, Any]:
-    enriched_episodes = enrich_episodes_with_taxonomy(episodes, game_name=game_name)
+    if episodes_are_enriched:
+        enriched_episodes = [dict(episode) for episode in episodes]
+    else:
+        enriched_episodes = enrich_episodes_with_taxonomy(
+            episodes,
+            game_name=game_name,
+            run_config=run_config,
+            episode_taxonomy=episode_taxonomy,
+        )
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for episode in enriched_episodes:
@@ -116,28 +192,43 @@ def score_run_dir(
         )
     detected_game = str(detected_game)
 
-    episodes = read_jsonl(episodes_path)
-    enriched_episodes = enrich_episodes_with_taxonomy(episodes, game_name=detected_game)
-
-    if write_taxonomy:
-        _write_jsonl(episodes_path, enriched_episodes)
-
     from games_bench.bench.registry import get_benchmark, load_builtin_benchmarks
 
     load_builtin_benchmarks()
     benchmark = get_benchmark(detected_game)
-    score_fn = benchmark.score_episodes
+    score_fn = benchmark.episode_scorer or benchmark.score_episodes
     if score_fn is None:
         raise SystemExit(
             f"Benchmark '{detected_game}' does not expose a scoring function."
         )
+    episode_taxonomy = benchmark.episode_taxonomy
+
+    episodes = read_jsonl(episodes_path)
+    summary_episodes = episodes
+    if write_taxonomy:
+        summary_episodes = enrich_episodes_with_taxonomy(
+            episodes,
+            game_name=detected_game,
+            run_config=run_config,
+            episode_taxonomy=episode_taxonomy,
+        )
+        _write_jsonl(episodes_path, summary_episodes)
+
+    parent_run_id_raw = run_config.get("run_id")
+    parent_run_id = (
+        str(parent_run_id_raw).strip() if parent_run_id_raw is not None else None
+    )
+    if parent_run_id == "":
+        parent_run_id = None
 
     summary = build_summary_document(
         run_config=run_config,
-        episodes=enriched_episodes,
+        episodes=summary_episodes,
         score_episodes=score_fn,
         score_version=score_version,
         game_name=detected_game,
+        episode_taxonomy=episode_taxonomy,
+        episodes_are_enriched=bool(write_taxonomy),
         scoring_input={
             "source": "offline",
             "run_dir": str(run_dir),
@@ -145,11 +236,25 @@ def score_run_dir(
             "episodes_file": str(episodes_path),
             "run_config_sha256": _sha256_file(run_config_path),
             "episodes_sha256": _sha256_file(episodes_path),
-            "episodes_count": len(enriched_episodes),
+            "episodes_count": len(summary_episodes),
+            "parent_run_id": parent_run_id,
         },
     )
 
     summary_path.write_text(json.dumps(summary, indent=2))
+    ensure_run_manifest(
+        run_dir,
+        run_config=run_config,
+        game_config=None,
+        parent_run_id=parent_run_id,
+        lineage_event=make_lineage_event(
+            "rescored",
+            payload={
+                "score_version": score_version,
+                "write_taxonomy": bool(write_taxonomy),
+            },
+        ),
+    )
     return summary_path
 
 
