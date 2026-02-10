@@ -16,8 +16,12 @@ from typing import Any, Iterable
 from games_bench.bench.common import (
     add_common_batch_arguments,
     resolve_interaction_mode,
+    resolve_scoring_settings,
     resolve_spec_name,
 )
+from games_bench.bench.lineage import build_run_manifest, write_run_manifest
+from games_bench.bench.scoring import build_summary_document
+from games_bench.bench.taxonomy import annotate_episode_with_taxonomy
 from games_bench.config import load_config, merge_dicts, normalize_games_config
 from games_bench.games.sokoban.adapter import SokobanGameAdapter
 from games_bench.games.sokoban.env import SokobanEnv, SokobanLevel, tool_schemas
@@ -931,6 +935,10 @@ def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def score_episodes(episodes: list[dict[str, Any]]) -> dict[str, Any]:
+    return _compute_metrics(episodes)
+
+
 def _write_raw_generations(
     events: list[dict[str, Any]],
     *,
@@ -1117,6 +1125,11 @@ def _run_sokoban_episode_job(
     turn_count = sum(
         1 for event in result.events if event.get("type") == "provider_result"
     )
+    provider_error_count = sum(
+        1
+        for event in result.events
+        if event.get("type") == "provider_result" and event.get("error")
+    )
 
     metrics = result.game_metrics
     move_ratio = (
@@ -1136,41 +1149,45 @@ def _run_sokoban_episode_job(
         else None
     )
     boxes_on_goals_ratio = _ratio(metrics.get("boxes_on_goals"), metrics.get("n_boxes"))
-    episode = {
-        "episode_id": job.episode_id,
-        "game": "sokoban",
-        "variant_id": job.variant_id,
-        "run_idx": job.run_idx,
-        "provider": provider_name,
-        "model": model_name,
-        "spec": spec_name,
-        "interaction_mode": interaction_mode,
-        "stateless": stateless,
-        "level_id": metrics.get("level_id", job.level.level_id),
-        "level_set": job.level_set_name,
-        "prompt_variant": job.prompt_variant.name,
-        "tools_variant": job.tool_variant.name,
-        "n_boxes": metrics.get("n_boxes", job.level.n_boxes),
-        "grid_size": metrics.get("grid_size"),
-        "solved": result.solved,
-        "deadlocked": bool(metrics.get("deadlocked", False)),
-        "turn_count": turn_count,
-        "move_count": metrics.get("move_count", result.move_count),
-        "push_count": metrics.get("push_count"),
-        "illegal_moves": result.illegal_moves,
-        "tool_calls": result.tool_calls,
-        "boxes_on_goals": metrics.get("boxes_on_goals"),
-        "boxes_on_goals_ratio": boxes_on_goals_ratio,
-        "optimal_moves": metrics.get("optimal_moves"),
-        "optimal_pushes": metrics.get("optimal_pushes"),
-        "known_optimal": bool(metrics.get("known_optimal", False)),
-        "move_ratio": move_ratio,
-        "push_ratio": push_ratio,
-        "terminated_early": terminated_early,
-        "termination_reason": termination_reason,
-        "usage": result.usage,
-        "cost": result.cost,
-    }
+    episode = annotate_episode_with_taxonomy(
+        {
+            "episode_id": job.episode_id,
+            "game": "sokoban",
+            "variant_id": job.variant_id,
+            "run_idx": job.run_idx,
+            "provider": provider_name,
+            "model": model_name,
+            "spec": spec_name,
+            "interaction_mode": interaction_mode,
+            "stateless": stateless,
+            "level_id": metrics.get("level_id", job.level.level_id),
+            "level_set": job.level_set_name,
+            "prompt_variant": job.prompt_variant.name,
+            "tools_variant": job.tool_variant.name,
+            "n_boxes": metrics.get("n_boxes", job.level.n_boxes),
+            "grid_size": metrics.get("grid_size"),
+            "solved": result.solved,
+            "deadlocked": bool(metrics.get("deadlocked", False)),
+            "turn_count": turn_count,
+            "move_count": metrics.get("move_count", result.move_count),
+            "push_count": metrics.get("push_count"),
+            "illegal_moves": result.illegal_moves,
+            "tool_calls": result.tool_calls,
+            "boxes_on_goals": metrics.get("boxes_on_goals"),
+            "boxes_on_goals_ratio": boxes_on_goals_ratio,
+            "optimal_moves": metrics.get("optimal_moves"),
+            "optimal_pushes": metrics.get("optimal_pushes"),
+            "known_optimal": bool(metrics.get("known_optimal", False)),
+            "move_ratio": move_ratio,
+            "push_ratio": push_ratio,
+            "terminated_early": terminated_early,
+            "termination_reason": termination_reason,
+            "provider_error_count": provider_error_count,
+            "usage": result.usage,
+            "cost": result.cost,
+        },
+        game_name="sokoban",
+    )
 
     recording = None
     if record:
@@ -1458,6 +1475,7 @@ def run_batch(
         config,
         interaction_mode=interaction_mode,
     )
+    score_enabled, score_version = resolve_scoring_settings(args, config)
     stagnation_patience = _resolve_optional_positive_int(
         getattr(args, "stagnation_patience", None),
         config,
@@ -1725,10 +1743,19 @@ def run_batch(
             "provider_retries": provider_retries,
             "provider_backoff": provider_backoff,
             "stream_debug": stream_debug,
+            "score_enabled": score_enabled,
+            "score_version": score_version,
             "python": platform.python_version(),
             "platform": platform.platform(),
         }
         (out_dir / "run_config.json").write_text(json.dumps(run_config, indent=2))
+        write_run_manifest(
+            out_dir,
+            build_run_manifest(
+                run_config=run_config,
+                game_config=config,
+            ),
+        )
 
         episodes_path = out_dir / "episodes.jsonl"
         traces_path = out_dir / "traces.jsonl"
@@ -1831,24 +1858,19 @@ def run_batch(
                             )
                             next_episode_id += 1
 
-        summary = {
-            "spec_base": spec_base,
-            "spec": spec_name,
-            "interaction_mode": interaction_mode,
-            "stateless": stateless,
-            "overall": _compute_metrics(episodes),
-            "variants": {},
-        }
-        for episode in episodes:
-            variant_id = episode["variant_id"]
-            summary["variants"].setdefault(variant_id, [])
-            summary["variants"][variant_id].append(episode)
-        summary["variants"] = {
-            variant_id: _compute_metrics(items)
-            for variant_id, items in summary["variants"].items()
-        }
-
-        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        if score_enabled:
+            summary = build_summary_document(
+                run_config=run_config,
+                episodes=episodes,
+                score_episodes=score_episodes,
+                score_version=score_version,
+                game_name=game_name,
+                scoring_input={
+                    "source": "inline",
+                    "episodes_count": len(episodes),
+                },
+            )
+            (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         run_dirs.append(out_dir)
     return run_dirs
 

@@ -32,6 +32,19 @@ def add_common_batch_arguments(
         ),
     )
     parser.add_argument(
+        "--no-score",
+        action="store_true",
+        help=(
+            "Skip summary scoring during generation. "
+            "You can score later with `games-bench score --run-dir ...`."
+        ),
+    )
+    parser.add_argument(
+        "--score-version",
+        default=None,
+        help="Score version label written into summary.json (default: score-v1).",
+    )
+    parser.add_argument(
         "--parallelism",
         type=int,
         default=None,
@@ -229,3 +242,20 @@ def resolve_progress_settings(
     if refresh_s <= 0:
         raise SystemExit("progress_refresh_s must be > 0.")
     return enabled, refresh_s, explicit_request
+
+
+def resolve_scoring_settings(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[bool, str]:
+    scoring_enabled = not bool(getattr(args, "no_score", False))
+    if scoring_enabled:
+        scoring_enabled = bool(config.get("score", True))
+
+    raw_version = getattr(args, "score_version", None) or config.get(
+        "score_version", "score-v1"
+    )
+    score_version = str(raw_version).strip() if raw_version is not None else "score-v1"
+    if not score_version:
+        raise SystemExit("score_version must not be empty.")
+    return scoring_enabled, score_version

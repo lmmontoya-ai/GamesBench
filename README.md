@@ -106,6 +106,8 @@ Notes:
   - `--max-inflight-provider` caps provider requests in-flight across workers.
   - `--stagnation-patience` early-stops episodes after repeated no-change turns.
   - `--stateless` disables turn-history context (default is stateful).
+  - `--no-score` skips summary scoring during generation (score later with `games-bench score`).
+  - `--score-version` stamps summary score version (default `score-v1`).
   - `--progress/--no-progress` toggles tqdm episode progress (default auto on TTY stderr).
   - `--progress-refresh-s` controls minimum refresh interval.
 
@@ -119,6 +121,7 @@ Batch config precedence:
 
 - Global keys: `models`, `spec`, `stateless`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
   - Progress keys: `progress`, `progress_refresh_s`
+  - Scoring keys: `score` (default true), `score_version` (default `score-v1`)
 - Per-game keys under `"games"`:
   - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`, `optimal_turn_cap_multiplier`
   - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`, `state_format`, `image_tile_size`, `image_labels`, `image_background`
@@ -154,6 +157,7 @@ Run outputs are written under:
 Each run contains:
 
 - `run_config.json`
+- `run_manifest.json`
 - `episodes.jsonl`
 - `traces.jsonl`
 - `summary.json`
@@ -164,6 +168,12 @@ Each run contains:
 
 - `spec`: `<spec>-stateful` or `<spec>-stateless`
 - `interaction_mode`: `stateful` or `stateless`
+
+Offline scoring:
+
+- `uv run games-bench score --run-dir <run_dir>`
+- Overwrite an existing summary after metric/taxonomy changes:
+  - `uv run games-bench score --run-dir <run_dir> --overwrite`
 
 ## Render And Review
 

@@ -14,6 +14,7 @@ class BenchSpec:
     add_arguments: Callable[[argparse.ArgumentParser], None] | None = None
     default_config: Callable[[], dict[str, Any]] | None = None
     estimate_episodes: Callable[[argparse.Namespace, dict[str, Any]], int] | None = None
+    score_episodes: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
     adapter_factory: Callable[..., Any] | None = None
     render_main: Callable[[], int] | None = None
     review_main: Callable[[], int] | None = None
@@ -54,6 +55,7 @@ def load_builtin_benchmarks() -> None:
             add_arguments=hanoi_bench.add_hanoi_arguments,
             default_config=hanoi_bench.default_hanoi_config,
             estimate_episodes=hanoi_bench.estimate_episodes,
+            score_episodes=hanoi_bench.score_episodes,
             adapter_factory=hanoi_bench.build_hanoi_adapter,
             render_main=hanoi_render.main,
             review_main=hanoi_review.main,
@@ -67,6 +69,7 @@ def load_builtin_benchmarks() -> None:
             add_arguments=sokoban_bench.add_sokoban_arguments,
             default_config=sokoban_bench.default_sokoban_config,
             estimate_episodes=sokoban_bench.estimate_episodes,
+            score_episodes=sokoban_bench.score_episodes,
             adapter_factory=sokoban_bench.build_sokoban_adapter,
             render_main=sokoban_render.main,
             review_main=sokoban_review.main,

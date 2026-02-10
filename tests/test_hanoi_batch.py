@@ -330,6 +330,9 @@ class TestHanoiBatch(unittest.TestCase):
             self.assertEqual(episode["n_pegs"], 4)
             self.assertIn("p4_n1", episode["variant_id"])
             self.assertIn("turn_count", episode)
+            self.assertIn("outcome_code", episode)
+            self.assertIn("failure_tags", episode)
+            self.assertEqual(episode["taxonomy_version"], "taxonomy-v1")
 
     def test_run_batch_supports_exact_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
