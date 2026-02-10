@@ -11,12 +11,14 @@ from games_bench.bench import (
     render,
     review,
     rl,
+    scoring,
     tool_calling,
 )
 
 
 COMMANDS: dict[str, tuple[str, Callable[[], int]]] = {
     "run": ("Batch benchmark", batch.main),
+    "score": ("Score run artifacts", scoring.main),
     "provider": ("Single provider episode", provider.main),
     "render": ("Render recordings (html/video)", render.main),
     "review": ("Review run (prompt + images)", review.main),

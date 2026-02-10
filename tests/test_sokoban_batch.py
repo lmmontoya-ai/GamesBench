@@ -102,6 +102,7 @@ class TestSokobanBatch(unittest.TestCase):
 
             required_files = [
                 "run_config.json",
+                "run_manifest.json",
                 "episodes.jsonl",
                 "traces.jsonl",
                 "summary.json",
@@ -140,6 +141,9 @@ class TestSokobanBatch(unittest.TestCase):
                 "push_ratio",
                 "usage",
                 "cost",
+                "outcome_code",
+                "failure_tags",
+                "taxonomy_version",
             }
             self.assertTrue(required_fields.issubset(first_episode.keys()))
 

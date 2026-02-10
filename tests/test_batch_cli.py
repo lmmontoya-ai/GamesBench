@@ -3,12 +3,14 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from games_bench.bench import batch
+from games_bench.bench import cli as bench_cli
 
 
 class TestBatchCli(unittest.TestCase):
@@ -25,6 +27,7 @@ class TestBatchCli(unittest.TestCase):
         self.assertIn("--max-inflight-provider", output)
         self.assertIn("--stagnation-patience", output)
         self.assertIn("--stateless", output)
+        self.assertIn("--no-score", output)
         self.assertIn("--progress", output)
         self.assertIn("--suite", output)
         self.assertIn("--list-suites", output)
@@ -354,6 +357,60 @@ class TestBatchCli(unittest.TestCase):
                 ]
             )
         self.assertIn("Unknown suite", str(ctx.exception))
+
+    def test_no_score_then_score_command_generates_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "hanoi",
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--n-pegs",
+                        "3",
+                        "--n-disks",
+                        "1",
+                        "--runs-per-variant",
+                        "1",
+                        "--prompt-variant",
+                        "minimal",
+                        "--tools-variant",
+                        "move_only",
+                        "--max-turns",
+                        "1",
+                        "--no-score",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            run_dir = Path(json.loads(stdout.getvalue())["run_dirs"][0])
+            self.assertTrue((run_dir / "run_manifest.json").exists())
+            self.assertFalse((run_dir / "summary.json").exists())
+
+            score_stdout = io.StringIO()
+            with contextlib.redirect_stdout(score_stdout):
+                with patch.object(sys, "argv", ["games-bench"]):
+                    score_rc = bench_cli.main(
+                        [
+                            "score",
+                            "--run-dir",
+                            str(run_dir),
+                        ]
+                    )
+            self.assertEqual(score_rc, 0)
+            score_payload = json.loads(score_stdout.getvalue())
+            self.assertEqual(len(score_payload["summary_paths"]), 1)
+            summary = json.loads((run_dir / "summary.json").read_text())
+            self.assertEqual(summary["score_version"], "score-v1")
+            self.assertEqual(summary["taxonomy_version"], "taxonomy-v1")
 
 
 if __name__ == "__main__":
