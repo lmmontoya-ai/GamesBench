@@ -2,7 +2,7 @@
 
 Date: 2026-02-10
 Owner: `games_bench/bench/*`
-Status: Design + implementation plan
+Status: Implemented through Phase 4; maintained as architecture + operations reference.
 
 ## Status Matrix
 
@@ -10,14 +10,19 @@ Last updated: 2026-02-10
 
 | Phase | Scope | Status | Notes |
 |---|---|---|---|
-| Phase 1 | lineage + taxonomy + score command | Done | Implemented in `lineage.py`, `taxonomy.py`, `scoring.py`; wired into run and CLI (`score`, `--no-score`). |
-| Phase 2 | shared executor + checkpoint/resume | Done | Implemented in `executor.py`, `checkpoint.py`; wired flags `--run-id`, `--resume`, `--strict-resume`, `--checkpoint-interval`; added resume tests. |
-| Phase 3 | compare + governance | Done | Implemented `compare.py`, CLI `games-bench compare`, threshold gating, regression exit code, and compare tests/docs. |
-| Phase 4 | hardening + CI alignment | Done | Added dedicated tests for lineage/taxonomy/score/checkpoint recovery/compare fixtures and legacy artifact compatibility checks. |
+| Phase 1 | lineage + taxonomy + score command | Done | Implemented in `lineage.py`, `taxonomy.py`, `scoring.py`; wired into run and CLI (`score`, `--no-score`), with backward-compatible scoring for legacy runs. |
+| Phase 2 | shared executor + checkpoint/resume | Done | Implemented in `executor.py`, `checkpoint.py`; wired flags `--run-id`, `--resume`, `--strict-resume`, `--checkpoint-interval`; `--resume` now enforces resume-only semantics (no silent fresh run). |
+| Phase 3 | compare + governance | Done | Implemented `compare.py`, CLI `games-bench compare`, threshold gating, regression exit code, and registry-driven compare metric hooks. |
+| Phase 4 | hardening + CI alignment | Done | Added dedicated tests for lineage/taxonomy/score/checkpoint recovery/compare fixtures, plus Sokoban resume and hook contract coverage. |
+
+## Current Notes
+
+- This document now describes shipped behavior unless a section is explicitly marked as optional/future.
+- New maturity work should be tracked as incremental roadmap items, not unresolved Phase 1-4 gaps.
 
 ## 1. Problem Statement
 
-Current benchmark orchestration is functional, but the largest maturity gaps are:
+At kickoff, the largest maturity gaps were:
 
 1. weak run lineage/provenance metadata
 2. no first-class resume/checkpoint for interrupted long runs
@@ -67,10 +72,16 @@ Implication for GameBench:
 Extend `BenchSpec` in `games_bench/bench/registry.py`:
 
 - `episode_scorer: Callable[[list[dict[str, Any]]], dict[str, Any]] | None`
-- `episode_taxonomy: Callable[[dict[str, Any], dict[str, Any]], list[str]] | None`
+- `episode_taxonomy: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any] | tuple[str, list[str]] | list[str]] | None`
 - `compare_metrics: Callable[[dict[str, Any]], dict[str, float]] | None`
 
 This keeps game-specific metric logic local while executor/scoring/compare remain generic.
+
+Implementation notes:
+
+- `episode_scorer` is the primary scoring hook in offline scoring; `score_episodes` remains the compatibility fallback.
+- `episode_taxonomy` can override/extend taxonomy through dict payload, `(outcome_code, tags)` tuple, or tags list.
+- `compare_metrics` is used by `games-bench compare`; if absent, compare falls back to `summary.overall`.
 
 ## 4. Data Contracts
 
@@ -84,10 +95,17 @@ Schema (`run_manifest_version = "v1"`):
 - `game`, `provider`, `model`, `spec`, `interaction_mode`
 - `argv`, `cwd`, `python_version`, `platform`
 - `git`: `commit`, `branch`, `is_dirty`, `remote_origin` (best-effort)
-- `config_hash`, `suite_hash`, `prompt_hash`, `tool_schema_hash`
+- `hashes`: `run_config_hash`, `game_config_hash`, `suite_hash`, `prompt_hash`, `tool_schema_hash`
 - `seed_lineage`: global/procgen/episode seed metadata
 - `parent_run_id` (for resumes/rescoring lineage)
 - `bench_version` (package version if available)
+- `lineage_events` (append-only event stream)
+
+Lineage event schema:
+
+- `event`: event type string (`resume`, `rescored`, etc.)
+- `timestamp_utc`: UTC ISO timestamp
+- `payload`: optional metadata object
 
 Compatibility:
 
@@ -112,7 +130,7 @@ Add/maintain in `summary.json`:
 
 - `score_version` (e.g., `score-v1`)
 - `scored_at`
-- `scoring_input`: source files + hashes
+- `scoring_input`: source files + hashes (`run_config_sha256`, `episodes_sha256`, `episodes_count`, optional `parent_run_id`)
 - `taxonomy_version`
 
 ### 4.4 Episode taxonomy fields
@@ -127,39 +145,22 @@ Append standardized fields to each episode record:
 
 ### 5.1 Executor interface
 
-Proposed API in `games_bench/bench/executor.py`:
+Current shared executor interface in `games_bench/bench/executor.py`:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class EpisodeJob:
-    episode_id: int
-    variant_id: str
-    payload: Any
-
-@dataclass(frozen=True, slots=True)
-class EpisodeOutput:
-    episode_id: int
-    variant_id: str
-    episode: dict[str, Any]
-    events: list[dict[str, Any]]
-    raw_lines: list[str]
-    recording: dict[str, Any] | None
-
-@dataclass(frozen=True, slots=True)
-class ExecutePlan:
-    jobs: list[EpisodeJob]
-    parallelism: int
-    record: bool
-    record_raw: bool
-    resume: bool
-
-
-def execute_plan(
+def run_episode_jobs(
     *,
     out_dir: Path,
-    plan: ExecutePlan,
-    run_job: Callable[[EpisodeJob], EpisodeOutput],
+    run_id: str,
+    jobs: list[Any],
+    run_job: Callable[[Any], Any],
+    parallelism: int,
+    record: bool,
+    record_raw: bool,
     progress_reporter: Any | None,
+    resume: bool,
+    strict_resume: bool,
+    checkpoint_interval: int,
 ) -> list[dict[str, Any]]:
     ...
 ```
@@ -202,8 +203,10 @@ Add common flags:
 Behavior:
 
 - if `--resume` and run exists: recover and continue
+- if `--resume` and run dir/checkpoint/artifacts are missing: fail fast with actionable error
 - if run exists and no `--resume`: fail with actionable message
 - if `--run-id` provided, deterministic path is used instead of timestamp-based run id
+- if `--resume` is used, `--run-id` (or config `run_id`) is required
 
 ### 6.2 Recovery rules
 
@@ -214,6 +217,11 @@ On resume:
 3. parse existing JSONL files; truncate trailing invalid partial line if needed
 4. reconstruct `completed_episode_ids`
 5. skip completed jobs and continue appending
+
+Strictness details:
+
+- `--strict-resume` enforces exact `run_id`/`job_plan_hash` continuity.
+- non-strict resume can rebuild checkpoint from committed episodes when safe, but still requires existing run artifacts.
 
 ## 7. Generation/Scoring Separation
 
@@ -235,6 +243,7 @@ Scoring flow:
 2. apply taxonomy classifier
 3. compute `overall` and `variants` metrics via game scorer from registry
 4. write/update `summary.json` with score metadata
+5. append/update `run_manifest.json` with a `rescored` lineage event and parent linkage when available
 
 This enables re-scoring after taxonomy/metric changes without rerunning model generations.
 
@@ -313,7 +322,7 @@ Outputs:
 
 ## 10. Implementation Plan (phased)
 
-### Phase 1: Foundation (lineage + taxonomy + score command)
+### Phase 1: Foundation (lineage + taxonomy + score command) [Implemented]
 
 1. Add `lineage.py` and write `run_manifest.json` in both runners.
 2. Add `taxonomy.py` and include tags in episode records.
@@ -322,7 +331,7 @@ Outputs:
 
 Deliverable: existing behavior preserved, but run metadata richer and scoring can be rerun.
 
-### Phase 2: Shared executor + checkpoint/resume
+### Phase 2: Shared executor + checkpoint/resume [Implemented]
 
 1. Add `executor.py` + `checkpoint.py`.
 2. Refactor `hanoi.py` and `sokoban.py` to call shared executor.
@@ -331,7 +340,7 @@ Deliverable: existing behavior preserved, but run metadata richer and scoring ca
 
 Deliverable: no duplicated commit loops; interrupted runs recover safely.
 
-### Phase 3: Compare + governance
+### Phase 3: Compare + governance [Implemented]
 
 1. Add `compare.py` and CLI command.
 2. Add thresholds schema support + fail-on-regression exit behavior.
@@ -339,7 +348,7 @@ Deliverable: no duplicated commit loops; interrupted runs recover safely.
 
 Deliverable: reproducible regression gate workflow.
 
-### Phase 4: Hardening
+### Phase 4: Hardening [Implemented]
 
 1. Add CI tests for resume/recover/compare/no-score/score.
 2. Add deterministic smoke fixtures for compare command.
@@ -350,11 +359,13 @@ Deliverable: robust migration path with backward compatibility.
 Phase 4 implementation status (2026-02-10):
 
 - Added recovery-focused checkpoint tests in `tests/test_checkpoint_recovery.py`.
-- Added dedicated score compatibility tests in `tests/test_score_cli.py`.
+- Added dedicated score compatibility + scoring hook tests in `tests/test_score_cli.py`.
 - Added dedicated lineage tests in `tests/test_lineage.py`.
 - Added dedicated taxonomy tests in `tests/test_failure_taxonomy.py`.
 - Added deterministic compare fixtures in `tests/fixtures/compare/simple/`.
 - Added fixture-driven compare smoke test in `tests/test_compare_fixtures.py`.
+- Added compare hook tests in `tests/test_compare_cli.py`.
+- Added Sokoban resume end-to-end coverage and resume error-path tests in `tests/test_checkpoint_resume.py`.
 
 ## 11. Test Plan
 
@@ -365,13 +376,21 @@ New tests:
 - `tests/test_checkpoint_resume.py`
   - interrupted run resumes without duplicate episode IDs.
   - strict resume rejects mismatched job plan.
+  - Sokoban resume behavior is validated end-to-end.
+  - missing-run/missing-artifact resume paths fail fast.
 - `tests/test_score_cli.py`
   - `--no-score` leaves no summary.
   - `games-bench score` regenerates summary with `score_version`.
+  - scoring lineage (`rescored`) and taxonomy/scoring hook behavior validated.
 - `tests/test_failure_taxonomy.py`
   - taxonomy tags/outcome mapping for known episode patterns.
 - `tests/test_compare_cli.py`
   - pass/fail threshold behavior and exit codes.
+  - `compare_metrics` hook extraction validated.
+- `tests/test_compare_fixtures.py`
+  - deterministic fixture-based compare smoke coverage.
+- `tests/test_checkpoint_recovery.py`
+  - JSONL/log truncation and checkpoint recovery hardening paths.
 
 Regression tests to retain:
 
@@ -387,7 +406,7 @@ Regression tests to retain:
 
 ## 13. Concrete File Touch Map
 
-Primary files to modify:
+Primary files modified:
 
 - `games_bench/bench/cli.py`
 - `games_bench/bench/common.py`
@@ -396,7 +415,7 @@ Primary files to modify:
 - `games_bench/bench/sokoban.py`
 - `README.md`
 
-New files:
+New files added:
 
 - `games_bench/bench/lineage.py`
 - `games_bench/bench/executor.py`
@@ -404,15 +423,17 @@ New files:
 - `games_bench/bench/scoring.py`
 - `games_bench/bench/taxonomy.py`
 - `games_bench/bench/compare.py`
-- optional `games_bench/bench/io.py`
+- `games_bench/bench/io.py` intentionally deferred; current IO recovery helpers live in `checkpoint.py`/`executor.py`
 
-New tests:
+Key tests added:
 
 - `tests/test_lineage.py`
 - `tests/test_checkpoint_resume.py`
+- `tests/test_checkpoint_recovery.py`
 - `tests/test_score_cli.py`
 - `tests/test_failure_taxonomy.py`
 - `tests/test_compare_cli.py`
+- `tests/test_compare_fixtures.py`
 
 ## 14. Definition of Done
 
@@ -424,3 +445,7 @@ This initiative is complete when:
 4. failure taxonomy fields are present and versioned
 5. compare command can gate regressions with configurable thresholds
 6. lineage/provenance metadata is sufficient to reproduce a run and audit its origin
+
+Completion check (2026-02-10):
+
+- All six Definition-of-Done criteria above are implemented and covered by tests in this repository.
