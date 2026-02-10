@@ -116,6 +116,10 @@ Optionally write taxonomy fields back into `episodes.jsonl`:
 
 - `uv run games-bench score --run-dir <run_dir> --write-taxonomy`
 
+Backfill an entire corpus of legacy runs (summary + taxonomy + manifest + checkpoint):
+
+- `uv run games-bench score --run-root artifacts/runs --overwrite --write-taxonomy`
+
 ### 5) Baseline vs candidate governance compare
 
 Compare two scored runs:
@@ -125,6 +129,10 @@ Compare two scored runs:
 Apply threshold gating and fail CI on regressions:
 
 - `uv run games-bench compare --baseline <baseline_run_dir> --candidate <candidate_run_dir> --thresholds <thresholds.json> --fail-on-regression`
+
+Add bootstrap confidence intervals / significance for selected metrics:
+
+- `uv run games-bench compare --baseline <baseline_run_dir> --candidate <candidate_run_dir> --bootstrap-samples 2000 --bootstrap-metric solve_rate --bootstrap-metric deadlock_rate`
 
 Example thresholds file:
 
@@ -186,6 +194,7 @@ Global config keys (top-level):
 - Provider controls: `provider_retries`, `provider_backoff`, `stream_debug`
 - Throughput controls: `parallelism`, `max_inflight_provider`
 - Stop controls: `stagnation_patience`
+- Tool-call controls: `max_tool_calls_per_turn`
 - Resume controls: `run_id`, `resume`, `strict_resume`, `checkpoint_interval`
 - Progress controls: `progress`, `progress_refresh_s`
 - Scoring controls: `score` (default true), `score_version` (default `score-v1`)
@@ -207,6 +216,7 @@ Per-game keys under `games`:
   - `procgen_grid_sizes`, `procgen_box_counts`, `procgen_levels_per_combo`
   - or explicit `procgen_cases` entries with `grid_size`, `box_count`, optional `levels_per_combo`, `wall_density`, `scramble_steps`
   - `procgen_seed`
+  - `procgen_seed_sweep`
 
 Example configs:
 

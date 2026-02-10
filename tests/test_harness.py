@@ -339,6 +339,68 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(result.tool_calls, 1)
         self.assertEqual(provider.calls, 1)
 
+    def test_executes_multiple_tool_calls_when_enabled(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(
+                    tool_calls=[
+                        ToolCall("dummy_noop", {}),
+                        ToolCall("dummy_move", {}),
+                    ],
+                    raw={},
+                )
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=2,
+            max_tool_calls_per_turn=2,
+        )
+        self.assertTrue(result.solved)
+        self.assertEqual(result.tool_calls, 2)
+        self.assertEqual(adapter.executed, ["dummy_noop", "dummy_move"])
+
+    def test_truncates_tool_calls_when_per_turn_limit_reached(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(
+                    tool_calls=[
+                        ToolCall("dummy_noop", {}),
+                        ToolCall("dummy_move", {}),
+                    ],
+                    raw={},
+                )
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=1,
+            max_tool_calls_per_turn=1,
+        )
+        self.assertFalse(result.solved)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(adapter.executed, ["dummy_noop"])
+        self.assertTrue(
+            any(event.get("type") == "tool_calls_truncated" for event in result.events)
+        )
+
+    def test_rejects_invalid_max_tool_calls_per_turn(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})]
+        )
+        with self.assertRaises(ValueError):
+            run_tool_calling_episode(
+                adapter,
+                provider,
+                max_turns=1,
+                max_tool_calls_per_turn=0,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -159,6 +159,7 @@ def default_hanoi_config() -> dict[str, Any]:
         "parallelism": 1,
         "max_inflight_provider": None,
         "stagnation_patience": None,
+        "max_tool_calls_per_turn": 1,
         "optimal_turn_cap_multiplier": 4.0,
         "start_peg": 0,
         "goal_peg": None,
@@ -909,6 +910,7 @@ def _run_hanoi_episode_job(
     record_raw: bool,
     record: bool,
     stagnation_patience: int | None,
+    max_tool_calls_per_turn: int,
 ) -> HanoiEpisodeOutput:
     n_pegs = job.case.n_pegs
     n_disks = job.case.n_disks
@@ -975,6 +977,7 @@ def _run_hanoi_episode_job(
         record_provider_raw=record_provider_raw,
         stagnation_patience=stagnation_patience,
         stateless=stateless,
+        max_tool_calls_per_turn=max_tool_calls_per_turn,
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)
@@ -1254,6 +1257,12 @@ def run_batch(
         config,
         "stagnation_patience",
     )
+    max_tool_calls_per_turn = _resolve_positive_int(
+        getattr(args, "max_tool_calls_per_turn", None),
+        config,
+        "max_tool_calls_per_turn",
+        1,
+    )
     optimal_turn_cap_multiplier = _resolve_optional_positive_float(
         getattr(args, "optimal_turn_cap_multiplier", None),
         config,
@@ -1522,6 +1531,7 @@ def run_batch(
                 "parallelism": parallelism,
                 "max_inflight_provider": max_inflight_provider,
                 "stagnation_patience": stagnation_patience,
+                "max_tool_calls_per_turn": max_tool_calls_per_turn,
                 "optimal_turn_cap_multiplier": optimal_turn_cap_multiplier,
                 "prompt_variants": [asdict(v) for v in selected_prompt_variants],
                 "tool_variants": [asdict(v) for v in selected_tool_variants],
@@ -1603,6 +1613,7 @@ def run_batch(
                 record_raw=record_raw,
                 record=record,
                 stagnation_patience=stagnation_patience,
+                max_tool_calls_per_turn=max_tool_calls_per_turn,
             )
 
         episodes = run_episode_jobs(

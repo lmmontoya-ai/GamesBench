@@ -95,6 +95,15 @@ def add_common_batch_arguments(
             "Disabled when unset."
         ),
     )
+    parser.add_argument(
+        "--max-tool-calls-per-turn",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of tool calls executed from one provider response "
+            "(default from config or 1)."
+        ),
+    )
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument(

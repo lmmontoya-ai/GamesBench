@@ -4,4 +4,4 @@ Goal: move all disks from peg {start_peg} (start) to peg {goal_peg} (goal).
 - Disks are integers; 1 is smallest.
 - Only move the top disk of a peg.
 - Never place a larger disk on a smaller disk.
-Call exactly one tool per turn.
+Use only as many tool calls per turn as needed to make reliable progress.

@@ -76,7 +76,7 @@ def main() -> int:
     instructions = (
         adapter.default_instructions()
         + f"\nUse ONLY the tool `{move_tools[0]}` to make moves. "
-        "Call exactly one tool per turn."
+        "Use as few tool calls per turn as needed."
     )
 
     result = run_tool_calling_episode(

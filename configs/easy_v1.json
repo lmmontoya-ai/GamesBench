@@ -19,12 +19,12 @@
         {"n_pegs": 4, "n_disks": 4},
         {"n_pegs": 4, "n_disks": 5}
       ],
-      "runs_per_variant": 3,
+      "runs_per_variant": 1,
       "max_turns": 200,
       "stagnation_patience": 20,
       "optimal_turn_cap_multiplier": 4.0,
-      "prompt_variants": ["full"],
-      "tool_variants": ["move_and_state"],
+      "prompt_variants": ["minimal", "full"],
+      "tool_variants": ["move_only", "move_and_state"],
       "state_format": "text"
     },
     "sokoban": {
@@ -37,12 +37,12 @@
       "procgen_seed": 2026,
       "procgen_wall_density": 0.08,
       "max_levels": null,
-      "runs_per_level": 2,
+      "runs_per_level": 1,
       "max_turns": 300,
       "stagnation_patience": 40,
       "deadlock_patience": 6,
-      "prompt_variants": ["full"],
-      "tool_variants": ["move_and_query"],
+      "prompt_variants": ["minimal", "full"],
+      "tool_variants": ["move_only", "move_and_query"],
       "state_format": "text",
       "detect_deadlocks": true,
       "terminal_on_deadlock": true

@@ -202,14 +202,20 @@ class TestBatchCli(unittest.TestCase):
                 for case in run_config["cases"]
             }
             self.assertEqual(actual_cases, expected_cases)
-            self.assertEqual(run_config["runs_per_variant"], 3)
+            self.assertEqual(run_config["runs_per_variant"], 1)
             self.assertEqual(run_config["spec"], "easy-v1-stateful")
             self.assertEqual(run_config["interaction_mode"], "stateful")
             summary = json.loads((run_dir / "summary.json").read_text())
             self.assertEqual(summary["spec"], "easy-v1-stateful")
             self.assertEqual(summary["interaction_mode"], "stateful")
             episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
-            self.assertEqual(len(episodes), 18)
+            expected_episode_count = (
+                len(run_config["cases"])
+                * int(run_config["runs_per_variant"])
+                * len(run_config["prompt_variants"])
+                * len(run_config["tool_variants"])
+            )
+            self.assertEqual(len(episodes), expected_episode_count)
 
     def test_suite_standard_v1_applies_hanoi_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,11 +263,17 @@ class TestBatchCli(unittest.TestCase):
                 for case in run_config["cases"]
             }
             self.assertEqual(actual_cases, expected_cases)
-            self.assertEqual(run_config["runs_per_variant"], 5)
+            self.assertEqual(run_config["runs_per_variant"], 2)
             self.assertEqual(run_config["spec"], "standard-v1-stateful")
             self.assertEqual(run_config["interaction_mode"], "stateful")
             episodes = (run_dir / "episodes.jsonl").read_text().splitlines()
-            self.assertEqual(len(episodes), 45)
+            expected_episode_count = (
+                len(run_config["cases"])
+                * int(run_config["runs_per_variant"])
+                * len(run_config["prompt_variants"])
+                * len(run_config["tool_variants"])
+            )
+            self.assertEqual(len(episodes), expected_episode_count)
 
     def test_suite_standard_v1_stateless_sets_spec_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -126,6 +126,7 @@ def run_tool_calling_episode(
     deadlock_checker: Callable[[GameAdapter], bool] | None = None,
     deadlock_terminate_on_check: bool | None = None,
     stateless: bool = False,
+    max_tool_calls_per_turn: int = 1,
 ) -> EpisodeResult:
     tools = adapter.tool_schemas()
     if allowed_tools is not None:
@@ -144,6 +145,8 @@ def run_tool_calling_episode(
         raise ValueError("stagnation_patience must be >= 1 when provided.")
     if deadlock_patience is not None and int(deadlock_patience) < 1:
         raise ValueError("deadlock_patience must be >= 1 when provided.")
+    if int(max_tool_calls_per_turn) < 1:
+        raise ValueError("max_tool_calls_per_turn must be >= 1.")
     deadlock_checker = deadlock_checker or _infer_deadlock_checker(adapter)
     terminate_on_deadlock_check = (
         bool(deadlock_terminate_on_check)
@@ -280,62 +283,87 @@ def run_tool_calling_episode(
         if result.error or not result.tool_calls:
             break
 
-        # Only execute the first tool call per turn for consistency.
-        call = result.tool_calls[0]
-        if conversation is not None:
-            conversation.append(
-                {
-                    "role": "assistant",
-                    "content": _compact_json(
-                        {"tool_call": {"name": call.name, "arguments": call.arguments}}
-                    ),
-                }
-            )
-        tool_calls += 1
-        if allowed_set is not None and call.name not in allowed_set:
-            tool_result = {"ok": False, "error": f"tool not allowed: {call.name}"}
-            tool_meta = {
-                "state_mutating": False,
-                "illegal_action": True,
-                "action_kind": "query",
-                "counts_as_move": False,
-            }
-            illegal_moves += 1
-        else:
-            execution = adapter.execute_tool(call.name, call.arguments)
-            tool_result = execution.result
-            tool_meta = execution.meta
-            if "illegal_action" in tool_meta:
-                if bool(tool_meta.get("illegal_action")):
-                    illegal_moves += 1
-            elif not tool_result.get("ok", False):
-                illegal_moves += 1
-        events.append(
-            {"type": "tool_call", "name": call.name, "arguments": call.arguments}
-        )
-        events.append({"type": "tool_result", "result": tool_result, "meta": tool_meta})
-        if conversation is not None:
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": _compact_json(
-                        {"tool_result": tool_result, "tool_meta": tool_meta}
-                    ),
-                }
-            )
-        if bool(tool_meta.get("terminate_episode")):
-            terminated_early = True
-            termination_reason = str(
-                tool_meta.get("termination_reason", "adapter_requested")
-            )
+        requested_calls = list(result.tool_calls)
+        executed_calls = requested_calls[: int(max_tool_calls_per_turn)]
+        if len(requested_calls) > len(executed_calls):
             events.append(
                 {
-                    "type": "early_stop",
-                    "reason": termination_reason,
-                    "stagnation_turns": stagnation_turns,
-                    "deadlock_turns": deadlock_turns,
+                    "type": "tool_calls_truncated",
+                    "requested": len(requested_calls),
+                    "executed": len(executed_calls),
+                    "max_tool_calls_per_turn": int(max_tool_calls_per_turn),
                 }
             )
+
+        stop_turn = False
+        for call in executed_calls:
+            if conversation is not None:
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": _compact_json(
+                            {
+                                "tool_call": {
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                }
+                            }
+                        ),
+                    }
+                )
+            tool_calls += 1
+            if allowed_set is not None and call.name not in allowed_set:
+                tool_result = {"ok": False, "error": f"tool not allowed: {call.name}"}
+                tool_meta = {
+                    "state_mutating": False,
+                    "illegal_action": True,
+                    "action_kind": "query",
+                    "counts_as_move": False,
+                }
+                illegal_moves += 1
+            else:
+                execution = adapter.execute_tool(call.name, call.arguments)
+                tool_result = execution.result
+                tool_meta = execution.meta
+                if "illegal_action" in tool_meta:
+                    if bool(tool_meta.get("illegal_action")):
+                        illegal_moves += 1
+                elif not tool_result.get("ok", False):
+                    illegal_moves += 1
+            events.append(
+                {"type": "tool_call", "name": call.name, "arguments": call.arguments}
+            )
+            events.append(
+                {"type": "tool_result", "result": tool_result, "meta": tool_meta}
+            )
+            if conversation is not None:
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": _compact_json(
+                            {"tool_result": tool_result, "tool_meta": tool_meta}
+                        ),
+                    }
+                )
+            if bool(tool_meta.get("terminate_episode")):
+                terminated_early = True
+                termination_reason = str(
+                    tool_meta.get("termination_reason", "adapter_requested")
+                )
+                events.append(
+                    {
+                        "type": "early_stop",
+                        "reason": termination_reason,
+                        "stagnation_turns": stagnation_turns,
+                        "deadlock_turns": deadlock_turns,
+                    }
+                )
+                stop_turn = True
+                break
+            if adapter.is_solved():
+                stop_turn = True
+                break
+        if stop_turn:
             break
 
     return EpisodeResult(

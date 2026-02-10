@@ -80,6 +80,64 @@ class TestScoreCli(unittest.TestCase):
                     if isinstance(event, dict)
                 )
             )
+            execution_state = json.loads((run_dir / "execution_state.json").read_text())
+            self.assertEqual(execution_state["run_id"], "legacy-run")
+            self.assertEqual(execution_state["total_jobs"], 1)
+            self.assertEqual(execution_state["completed_episode_ids"], [0])
+
+            refreshed_run_config = json.loads((run_dir / "run_config.json").read_text())
+            self.assertEqual(refreshed_run_config["spec_base"], "custom")
+            self.assertEqual(refreshed_run_config["spec"], "custom-stateful")
+            self.assertEqual(refreshed_run_config["interaction_mode"], "stateful")
+            self.assertFalse(refreshed_run_config["stateless"])
+
+    def test_score_run_root_discovers_nested_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "runs"
+            run_a = root / "hanoi" / "a"
+            run_b = root / "hanoi" / "b"
+            run_a.mkdir(parents=True, exist_ok=True)
+            run_b.mkdir(parents=True, exist_ok=True)
+
+            run_config_payload = {
+                "run_id": "root-discovery",
+                "game": "hanoi",
+                "provider": "cli",
+                "model": "legacy",
+            }
+            episode_payload = {
+                "episode_id": 0,
+                "variant_id": "legacy",
+                "solved": False,
+                "turn_count": 1,
+                "max_turns": 1,
+                "illegal_moves": 0,
+                "tool_calls": 1,
+            }
+            for run_dir in (run_a, run_b):
+                (run_dir / "run_config.json").write_text(
+                    json.dumps(run_config_payload, indent=2)
+                )
+                (run_dir / "episodes.jsonl").write_text(
+                    json.dumps(episode_payload) + "\n"
+                )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = bench_cli.main(
+                    [
+                        "score",
+                        "--run-root",
+                        str(root),
+                    ]
+                )
+            self.assertEqual(rc, 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["run_count"], 2)
+            self.assertEqual(len(payload["summary_paths"]), 2)
+            self.assertTrue((run_a / "summary.json").exists())
+            self.assertTrue((run_b / "summary.json").exists())
 
     def test_score_requires_overwrite_when_summary_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

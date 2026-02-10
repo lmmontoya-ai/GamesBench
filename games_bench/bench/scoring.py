@@ -9,6 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from games_bench.bench.checkpoint import (
+    build_execution_state,
+    checkpoint_path,
+    compute_job_plan_hash,
+    save_execution_state,
+)
 from games_bench.bench.lineage import ensure_run_manifest, make_lineage_event
 from games_bench.bench.taxonomy import TAXONOMY_VERSION, annotate_episode_with_taxonomy
 
@@ -46,6 +52,115 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
+
+
+def _normalize_spec_base(raw_base: Any) -> str:
+    if raw_base is None:
+        return "custom"
+    spec_base = str(raw_base).strip()
+    if not spec_base:
+        return "custom"
+    for suffix in ("-stateful", "-stateless"):
+        if spec_base.endswith(suffix):
+            trimmed = spec_base[: -len(suffix)].strip("-_ ")
+            return trimmed or "custom"
+    return spec_base
+
+
+def normalize_run_config_identity(run_config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(run_config)
+
+    stateless_raw = normalized.get("stateless")
+    if isinstance(stateless_raw, bool):
+        stateless = stateless_raw
+    elif stateless_raw is None:
+        stateless = False
+    else:
+        stateless = bool(stateless_raw)
+
+    interaction_mode_raw = normalized.get("interaction_mode")
+    interaction_mode = ""
+    if interaction_mode_raw is not None:
+        interaction_mode = str(interaction_mode_raw).strip().lower()
+    if interaction_mode not in {"stateful", "stateless"}:
+        interaction_mode = "stateless" if stateless else "stateful"
+    stateless = interaction_mode == "stateless"
+
+    spec_base = _normalize_spec_base(
+        normalized.get("spec_base") or normalized.get("spec")
+    )
+    spec_raw = normalized.get("spec")
+    spec = str(spec_raw).strip() if spec_raw is not None else ""
+    if not spec:
+        spec = f"{spec_base}-{interaction_mode}"
+
+    normalized["spec_base"] = spec_base
+    normalized["spec"] = spec
+    normalized["interaction_mode"] = interaction_mode
+    normalized["stateless"] = stateless
+    return normalized
+
+
+def _extract_episode_ids(episodes: list[dict[str, Any]]) -> list[int]:
+    episode_ids: set[int] = set()
+    for episode in episodes:
+        raw = episode.get("episode_id")
+        if isinstance(raw, bool):
+            episode_ids.add(int(raw))
+            continue
+        if isinstance(raw, int):
+            episode_ids.add(raw)
+            continue
+        if isinstance(raw, float):
+            episode_ids.add(int(raw))
+    return sorted(episode_ids)
+
+
+def ensure_execution_state_for_run_dir(
+    run_dir: Path,
+    *,
+    run_config: dict[str, Any],
+    episodes: list[dict[str, Any]],
+) -> Path:
+    state_path = checkpoint_path(run_dir)
+    if state_path.exists():
+        return state_path
+
+    completed_episode_ids = _extract_episode_ids(episodes)
+    total_jobs = len(episodes)
+    if completed_episode_ids:
+        total_jobs = max(total_jobs, max(completed_episode_ids) + 1)
+
+    signatures: list[dict[str, Any]] = []
+    by_episode_id = {
+        int(ep["episode_id"]): ep
+        for ep in episodes
+        if isinstance(ep.get("episode_id"), (int, float, bool))
+    }
+    for episode_id in completed_episode_ids:
+        episode = by_episode_id.get(episode_id, {})
+        signatures.append(
+            {
+                "episode_id": episode_id,
+                "variant_id": episode.get("variant_id"),
+                "run_idx": episode.get("run_idx"),
+            }
+        )
+
+    job_plan_hash = compute_job_plan_hash(signatures)
+    run_id_raw = run_config.get("run_id")
+    run_id = str(run_id_raw).strip() if run_id_raw is not None else ""
+    if not run_id:
+        run_id = run_dir.name
+
+    state = build_execution_state(
+        run_id=run_id,
+        job_plan_hash=job_plan_hash,
+        total_jobs=total_jobs,
+        completed_episode_ids=completed_episode_ids,
+    )
+    save_execution_state(state_path, state)
+    return state_path
 
 
 def _coerce_failure_tags(value: Any) -> list[str]:
@@ -185,6 +300,13 @@ def score_run_dir(
         raise SystemExit(f"Missing required file: {run_config_path}")
 
     run_config = json.loads(run_config_path.read_text())
+    normalized_run_config = normalize_run_config_identity(run_config)
+    if normalized_run_config != run_config:
+        run_config = normalized_run_config
+        run_config_path.write_text(json.dumps(run_config, indent=2))
+    else:
+        run_config = normalized_run_config
+
     detected_game = game_name or run_config.get("game")
     if not detected_game:
         raise SystemExit(
@@ -255,7 +377,28 @@ def score_run_dir(
             },
         ),
     )
+    ensure_execution_state_for_run_dir(
+        run_dir,
+        run_config=run_config,
+        episodes=summary_episodes,
+    )
     return summary_path
+
+
+def discover_run_dirs(root: Path) -> list[Path]:
+    root = root.resolve()
+    run_dirs: set[Path] = set()
+
+    direct_config = root / "run_config.json"
+    direct_episodes = root / "episodes.jsonl"
+    if direct_config.exists() and direct_episodes.exists():
+        run_dirs.add(root)
+    else:
+        for run_config_path in root.rglob("run_config.json"):
+            run_dir = run_config_path.parent
+            if (run_dir / "episodes.jsonl").exists():
+                run_dirs.add(run_dir.resolve())
+    return sorted(run_dirs)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -266,8 +409,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-dir",
         action="append",
         dest="run_dirs",
-        required=True,
+        default=None,
         help="Run directory to score (repeatable).",
+    )
+    parser.add_argument(
+        "--run-root",
+        action="append",
+        dest="run_roots",
+        default=None,
+        help=(
+            "Root directory to recursively discover run directories containing "
+            "run_config.json + episodes.jsonl (repeatable)."
+        ),
     )
     parser.add_argument(
         "--game",
@@ -296,9 +449,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    run_dirs: list[Path] = []
+    for raw_path in args.run_dirs or []:
+        run_dirs.append(Path(raw_path))
+    for raw_root in args.run_roots or []:
+        run_dirs.extend(discover_run_dirs(Path(raw_root)))
+
+    if not run_dirs:
+        parser.error("Provide at least one --run-dir or --run-root.")
+
+    deduped_run_dirs = sorted({path.resolve() for path in run_dirs})
     summary_paths: list[str] = []
-    for raw_path in args.run_dirs:
-        run_dir = Path(raw_path)
+    for run_dir in deduped_run_dirs:
         summary_path = score_run_dir(
             run_dir,
             game_name=args.game,
@@ -308,7 +470,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         summary_paths.append(str(summary_path))
 
-    print(json.dumps({"summary_paths": summary_paths}, indent=2))
+    print(
+        json.dumps(
+            {
+                "summary_paths": summary_paths,
+                "run_count": len(deduped_run_dirs),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
