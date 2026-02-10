@@ -47,8 +47,6 @@ def list_benchmarks() -> list[str]:
 
 
 def load_builtin_benchmarks() -> None:
-    if _REGISTRY:
-        return
     from games_bench.bench import hanoi as hanoi_bench
     from games_bench.bench import sokoban as sokoban_bench
     from games_bench.games.hanoi import render as hanoi_render
@@ -56,35 +54,38 @@ def load_builtin_benchmarks() -> None:
     from games_bench.games.sokoban import render as sokoban_render
     from games_bench.games.sokoban import review as sokoban_review
 
-    register_benchmark(
-        BenchSpec(
-            name="hanoi",
-            description="Tower of Hanoi",
-            batch_runner=hanoi_bench.run_batch,
-            add_arguments=hanoi_bench.add_hanoi_arguments,
-            default_config=hanoi_bench.default_hanoi_config,
-            estimate_episodes=hanoi_bench.estimate_episodes,
-            episode_scorer=hanoi_bench.score_episodes,
-            compare_metrics=hanoi_bench.compare_metrics,
-            score_episodes=hanoi_bench.score_episodes,
-            adapter_factory=hanoi_bench.build_hanoi_adapter,
-            render_main=hanoi_render.main,
-            review_main=hanoi_review.main,
+    if "hanoi" not in _REGISTRY:
+        register_benchmark(
+            BenchSpec(
+                name="hanoi",
+                description="Tower of Hanoi",
+                batch_runner=hanoi_bench.run_batch,
+                add_arguments=hanoi_bench.add_hanoi_arguments,
+                default_config=hanoi_bench.default_hanoi_config,
+                estimate_episodes=hanoi_bench.estimate_episodes,
+                episode_scorer=hanoi_bench.score_episodes,
+                compare_metrics=hanoi_bench.compare_metrics,
+                score_episodes=hanoi_bench.score_episodes,
+                adapter_factory=hanoi_bench.build_hanoi_adapter,
+                render_main=hanoi_render.main,
+                review_main=hanoi_review.main,
+            )
         )
-    )
-    register_benchmark(
-        BenchSpec(
-            name="sokoban",
-            description="Sokoban",
-            batch_runner=sokoban_bench.run_batch,
-            add_arguments=sokoban_bench.add_sokoban_arguments,
-            default_config=sokoban_bench.default_sokoban_config,
-            estimate_episodes=sokoban_bench.estimate_episodes,
-            episode_scorer=sokoban_bench.score_episodes,
-            compare_metrics=sokoban_bench.compare_metrics,
-            score_episodes=sokoban_bench.score_episodes,
-            adapter_factory=sokoban_bench.build_sokoban_adapter,
-            render_main=sokoban_render.main,
-            review_main=sokoban_review.main,
+
+    if "sokoban" not in _REGISTRY:
+        register_benchmark(
+            BenchSpec(
+                name="sokoban",
+                description="Sokoban",
+                batch_runner=sokoban_bench.run_batch,
+                add_arguments=sokoban_bench.add_sokoban_arguments,
+                default_config=sokoban_bench.default_sokoban_config,
+                estimate_episodes=sokoban_bench.estimate_episodes,
+                episode_scorer=sokoban_bench.score_episodes,
+                compare_metrics=sokoban_bench.compare_metrics,
+                score_episodes=sokoban_bench.score_episodes,
+                adapter_factory=sokoban_bench.build_sokoban_adapter,
+                render_main=sokoban_render.main,
+                review_main=sokoban_review.main,
+            )
         )
-    )

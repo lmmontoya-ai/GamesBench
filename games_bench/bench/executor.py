@@ -29,6 +29,28 @@ def _safe_int(value: Any) -> int | None:
     return None
 
 
+def _episode_id_from_job(job: Any) -> int:
+    episode_id = _safe_int(getattr(job, "episode_id", None))
+    if episode_id is None:
+        raise SystemExit("Episode job missing integer 'episode_id'.")
+    return episode_id
+
+
+def _collect_job_episode_ids(jobs: list[Any]) -> list[int]:
+    episode_ids: list[int] = []
+    seen_episode_ids: set[int] = set()
+    for job in jobs:
+        episode_id = _episode_id_from_job(job)
+        if episode_id in seen_episode_ids:
+            raise SystemExit(
+                f"Duplicate episode_id detected in job plan: {episode_id}. "
+                "Each job must have a unique episode_id."
+            )
+        seen_episode_ids.add(episode_id)
+        episode_ids.append(episode_id)
+    return episode_ids
+
+
 def _episode_id_from_output(output: Any) -> int:
     value = getattr(output, "episode_id", None)
     if value is None and isinstance(output, dict):
@@ -130,6 +152,7 @@ def run_episode_jobs(
     if checkpoint_interval < 1:
         raise SystemExit("checkpoint_interval must be >= 1")
 
+    job_episode_ids = _collect_job_episode_ids(jobs)
     signatures = [_job_signature(job) for job in jobs]
     job_plan_hash = compute_job_plan_hash(signatures)
     state_file = checkpoint_path(out_dir)
@@ -216,11 +239,12 @@ def run_episode_jobs(
         )
         save_execution_state(state_file, state)
 
-    pending_jobs = [
-        job
-        for job in jobs
-        if _safe_int(getattr(job, "episode_id", None)) not in completed_ids
+    pending_job_pairs = [
+        (job, episode_id)
+        for job, episode_id in zip(jobs, job_episode_ids, strict=False)
+        if episode_id not in completed_ids
     ]
+    pending_episode_ids = [episode_id for _, episode_id in pending_job_pairs]
 
     episodes: list[dict[str, Any]] = sorted(
         [dict(ep) for ep in recovered_episodes],
@@ -244,6 +268,11 @@ def run_episode_jobs(
             nonlocal state, commits_since_checkpoint
 
             episode_id = _episode_id_from_output(output)
+            if episode_id in completed_ids:
+                raise SystemExit(
+                    f"Duplicate committed episode_id detected: {episode_id}. "
+                    "Episode outputs must be unique."
+                )
             variant_id = _variant_id_from_output(output)
             episode = _episode_dict_from_output(output)
             events = _events_from_output(output)
@@ -282,29 +311,52 @@ def run_episode_jobs(
                 commits_since_checkpoint = 0
 
         if parallelism == 1:
-            for job in pending_jobs:
+            for job, expected_episode_id in pending_job_pairs:
                 output = run_job(job)
+                output_episode_id = _episode_id_from_output(output)
+                if output_episode_id != expected_episode_id:
+                    raise SystemExit(
+                        "Episode output episode_id mismatch for serial execution: "
+                        f"expected {expected_episode_id}, got {output_episode_id}."
+                    )
                 commit_output(output)
         else:
             pending_by_episode: dict[int, Any] = {}
-            next_episode_id = 0
-            while next_episode_id in completed_ids:
-                next_episode_id += 1
+            pending_index = 0
 
             with ThreadPoolExecutor(max_workers=parallelism) as executor:
                 future_map = {
-                    executor.submit(run_job, job): job for job in pending_jobs
+                    executor.submit(run_job, job): expected_episode_id
+                    for job, expected_episode_id in pending_job_pairs
                 }
                 for future in as_completed(future_map):
                     output = future.result()
+                    expected_episode_id = future_map[future]
                     output_episode_id = _episode_id_from_output(output)
+                    if output_episode_id != expected_episode_id:
+                        raise SystemExit(
+                            "Episode output episode_id mismatch for parallel execution: "
+                            f"expected {expected_episode_id}, got {output_episode_id}."
+                        )
+                    if output_episode_id in pending_by_episode:
+                        raise SystemExit(
+                            f"Duplicate episode output detected for episode_id={output_episode_id}."
+                        )
                     pending_by_episode[output_episode_id] = output
-                    while next_episode_id in pending_by_episode:
+                    while pending_index < len(pending_episode_ids):
+                        next_episode_id = pending_episode_ids[pending_index]
+                        if next_episode_id not in pending_by_episode:
+                            break
                         ordered = pending_by_episode.pop(next_episode_id)
                         commit_output(ordered)
-                        next_episode_id += 1
-                        while next_episode_id in completed_ids:
-                            next_episode_id += 1
+                        pending_index += 1
+
+                if pending_by_episode:
+                    dangling_ids = ", ".join(str(k) for k in sorted(pending_by_episode))
+                    raise SystemExit(
+                        "Executor failed to commit all pending episode outputs. "
+                        f"Uncommitted episode_id(s): {dangling_ids}"
+                    )
 
         if commits_since_checkpoint > 0:
             save_execution_state(state_file, state)

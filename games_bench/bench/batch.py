@@ -55,6 +55,19 @@ def _resolve_config(args: argparse.Namespace) -> dict[str, Any]:
     return merge_dicts(suite_config, file_config)
 
 
+def _normalize_games_config_or_error(
+    parser: argparse.ArgumentParser,
+    config: dict[str, Any],
+    *,
+    default_game: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    try:
+        return normalize_games_config(config, default_game=default_game)
+    except ValueError as exc:
+        parser.error(str(exc))
+        raise
+
+
 def _estimate_episode_total(
     *,
     args: argparse.Namespace,
@@ -67,16 +80,32 @@ def _estimate_episode_total(
 
     total_episodes = 0
     can_estimate_all = True
-    for _game_name, benchmark, game_config in game_configs:
+    for game_name, benchmark, game_config in game_configs:
         estimator = benchmark.estimate_episodes
         if estimator is None:
             can_estimate_all = False
             continue
         try:
-            estimate = int(estimator(args, game_config))
-        except Exception:
+            raw_estimate = estimator(args, game_config)
+        except NotImplementedError:
             can_estimate_all = False
             continue
+        except SystemExit:
+            raise
+        except Exception as exc:
+            raise SystemExit(
+                f"Failed to estimate episodes for benchmark '{game_name}': {exc}"
+            ) from exc
+        if raw_estimate is None:
+            can_estimate_all = False
+            continue
+        try:
+            estimate = int(raw_estimate)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "Benchmark episode estimator must return an integer or None. "
+                f"Got {raw_estimate!r} for benchmark '{game_name}'."
+            ) from exc
         total_episodes += max(0, estimate)
 
     if can_estimate_all and total_episodes > 0:
@@ -110,7 +139,11 @@ def _run_single_game(
     _require_provider(args, parser)
 
     config = _resolve_config(args)
-    global_defaults, games_map = normalize_games_config(config, default_game=game_name)
+    global_defaults, games_map = _normalize_games_config_or_error(
+        parser,
+        config,
+        default_game=game_name,
+    )
     bench_defaults = benchmark.default_config() if benchmark.default_config else {}
     game_config = merge_dicts(
         bench_defaults,
@@ -157,7 +190,11 @@ def _run_config_mode(argv: list[str]) -> list[str]:
     _require_provider(args, parser)
 
     config = _resolve_config(args)
-    global_defaults, games_map = normalize_games_config(config, default_game="hanoi")
+    global_defaults, games_map = _normalize_games_config_or_error(
+        parser,
+        config,
+        default_game="hanoi",
+    )
     selected_games = _select_games(games_map, args.games)
     if not selected_games:
         selected_games = ["hanoi"]

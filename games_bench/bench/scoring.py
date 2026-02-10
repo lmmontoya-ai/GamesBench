@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import sys
@@ -70,14 +71,13 @@ def enrich_episodes_with_taxonomy(
     ) = None,
 ) -> list[dict[str, Any]]:
     enriched_rows: list[dict[str, Any]] = []
-    run_config_payload = dict(run_config)
     for episode in episodes:
         base = annotate_episode_with_taxonomy(episode, game_name=game_name)
         if episode_taxonomy is None:
             enriched_rows.append(base)
             continue
 
-        hook_value = episode_taxonomy(dict(episode), run_config_payload)
+        hook_value = episode_taxonomy(dict(episode), copy.deepcopy(run_config))
         if isinstance(hook_value, dict):
             merged = dict(base)
             merged.update(hook_value)
