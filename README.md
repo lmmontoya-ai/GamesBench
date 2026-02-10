@@ -1,4 +1,4 @@
-## games-bench
+## GamesBench
 
 Benchmark environments and orchestration for evaluating long-horizon planning and spatial reasoning in tool-calling agents.
 
