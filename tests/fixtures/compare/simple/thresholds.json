@@ -1,0 +1,16 @@
+{
+  "metrics": {
+    "solve_rate": {
+      "direction": "higher_better",
+      "max_drop": 0.01
+    },
+    "avg_illegal_moves": {
+      "direction": "lower_better",
+      "max_increase": 0.2
+    }
+  },
+  "gating": {
+    "require_same_spec": true,
+    "require_same_interaction_mode": true
+  }
+}

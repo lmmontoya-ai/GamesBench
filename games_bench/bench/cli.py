@@ -5,6 +5,7 @@ from typing import Callable
 
 from games_bench.bench import (
     batch,
+    compare,
     manual_tool_loop,
     openai_tool_calling,
     provider,
@@ -19,6 +20,7 @@ from games_bench.bench import (
 COMMANDS: dict[str, tuple[str, Callable[[], int]]] = {
     "run": ("Batch benchmark", batch.main),
     "score": ("Score run artifacts", scoring.main),
+    "compare": ("Compare baseline and candidate runs", compare.main),
     "provider": ("Single provider episode", provider.main),
     "render": ("Render recordings (html/video)", render.main),
     "review": ("Review run (prompt + images)", review.main),

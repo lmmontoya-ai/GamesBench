@@ -1,0 +1,9 @@
+{
+  "run_id": "candidate-hanoi-m1",
+  "game": "hanoi",
+  "spec": "easy-v1-stateful",
+  "interaction_mode": "stateful",
+  "provider": "openrouter",
+  "model": "m1",
+  "stateless": false
+}

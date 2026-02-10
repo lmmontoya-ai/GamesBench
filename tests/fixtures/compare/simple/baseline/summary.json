@@ -1,0 +1,9 @@
+{
+  "spec": "easy-v1-stateful",
+  "interaction_mode": "stateful",
+  "overall": {
+    "solve_rate": 0.62,
+    "avg_illegal_moves": 1.1
+  },
+  "variants": {}
+}

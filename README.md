@@ -116,6 +116,34 @@ Optionally write taxonomy fields back into `episodes.jsonl`:
 
 - `uv run games-bench score --run-dir <run_dir> --write-taxonomy`
 
+### 5) Baseline vs candidate governance compare
+
+Compare two scored runs:
+
+- `uv run games-bench compare --baseline <baseline_run_dir> --candidate <candidate_run_dir>`
+
+Apply threshold gating and fail CI on regressions:
+
+- `uv run games-bench compare --baseline <baseline_run_dir> --candidate <candidate_run_dir> --thresholds <thresholds.json> --fail-on-regression`
+
+Example thresholds file:
+
+```json
+{
+  "metrics": {
+    "solve_rate": {"direction": "higher_better", "max_drop": 0.02},
+    "avg_illegal_moves": {"direction": "lower_better", "max_increase": 0.20},
+    "deadlock_rate": {"direction": "lower_better", "max_increase": 0.03}
+  },
+  "gating": {
+    "require_same_spec": true,
+    "require_same_interaction_mode": true
+  }
+}
+```
+
+Machine-readable output is written to `compare_report.json` by default (override with `--report-file`).
+
 ## Output artifacts
 
 Runs are stored under:

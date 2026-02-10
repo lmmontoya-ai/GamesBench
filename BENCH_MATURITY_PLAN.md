@@ -4,6 +4,17 @@ Date: 2026-02-10
 Owner: `games_bench/bench/*`
 Status: Design + implementation plan
 
+## Status Matrix
+
+Last updated: 2026-02-10
+
+| Phase | Scope | Status | Notes |
+|---|---|---|---|
+| Phase 1 | lineage + taxonomy + score command | Done | Implemented in `lineage.py`, `taxonomy.py`, `scoring.py`; wired into run and CLI (`score`, `--no-score`). |
+| Phase 2 | shared executor + checkpoint/resume | Done | Implemented in `executor.py`, `checkpoint.py`; wired flags `--run-id`, `--resume`, `--strict-resume`, `--checkpoint-interval`; added resume tests. |
+| Phase 3 | compare + governance | Done | Implemented `compare.py`, CLI `games-bench compare`, threshold gating, regression exit code, and compare tests/docs. |
+| Phase 4 | hardening + CI alignment | Done | Added dedicated tests for lineage/taxonomy/score/checkpoint recovery/compare fixtures and legacy artifact compatibility checks. |
+
 ## 1. Problem Statement
 
 Current benchmark orchestration is functional, but the largest maturity gaps are:
@@ -335,6 +346,15 @@ Deliverable: reproducible regression gate workflow.
 3. Add compatibility checks for older run dirs (no manifest, no taxonomy).
 
 Deliverable: robust migration path with backward compatibility.
+
+Phase 4 implementation status (2026-02-10):
+
+- Added recovery-focused checkpoint tests in `tests/test_checkpoint_recovery.py`.
+- Added dedicated score compatibility tests in `tests/test_score_cli.py`.
+- Added dedicated lineage tests in `tests/test_lineage.py`.
+- Added dedicated taxonomy tests in `tests/test_failure_taxonomy.py`.
+- Added deterministic compare fixtures in `tests/fixtures/compare/simple/`.
+- Added fixture-driven compare smoke test in `tests/test_compare_fixtures.py`.
 
 ## 11. Test Plan
 
