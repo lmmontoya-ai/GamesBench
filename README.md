@@ -104,6 +104,10 @@ Notes:
 - Runtime controls:
   - `--parallelism` controls concurrent episode workers.
   - `--max-inflight-provider` caps provider requests in-flight across workers.
+  - `--run-id` provides deterministic run directory naming.
+  - `--resume` resumes interrupted runs (requires `--run-id`).
+  - `--strict-resume` enforces checkpoint/job-plan compatibility checks.
+  - `--checkpoint-interval` controls checkpoint frequency in committed episodes.
   - `--stagnation-patience` early-stops episodes after repeated no-change turns.
   - `--stateless` disables turn-history context (default is stateful).
   - `--no-score` skips summary scoring during generation (score later with `games-bench score`).
@@ -158,6 +162,7 @@ Each run contains:
 
 - `run_config.json`
 - `run_manifest.json`
+- `execution_state.json` (checkpoint state; updated during execution/resume)
 - `episodes.jsonl`
 - `traces.jsonl`
 - `summary.json`
