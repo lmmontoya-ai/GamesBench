@@ -94,6 +94,48 @@ class TestHanoiBatch(unittest.TestCase):
             self.assertIsNone(args.provider_retries)
             self.assertIsNone(args.provider_backoff)
 
+    def test_estimate_episodes_matches_run_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="cli",
+                model=None,
+                config=None,
+                max_turns=1,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd='python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                cases=["3x1"],
+                n_pegs=None,
+                n_disks=None,
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=2,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+            )
+            estimated = hanoi_bench.estimate_episodes(args, config={})
+            run_dir = hanoi_bench.run_batch(args, config={}, game_name="hanoi")[0]
+            actual = len((Path(run_dir) / "episodes.jsonl").read_text().splitlines())
+            self.assertEqual(actual, estimated)
+
     def test_unknown_prompt_variant_raises(self) -> None:
         args = argparse.Namespace(
             provider="cli",
@@ -287,6 +329,7 @@ class TestHanoiBatch(unittest.TestCase):
             )
             self.assertEqual(episode["n_pegs"], 4)
             self.assertIn("p4_n1", episode["variant_id"])
+            self.assertIn("turn_count", episode)
 
     def test_run_batch_supports_exact_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

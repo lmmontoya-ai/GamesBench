@@ -5,7 +5,11 @@ import json
 import sys
 from typing import Any
 
-from games_bench.bench.common import add_common_batch_arguments
+from games_bench.bench.common import (
+    add_common_batch_arguments,
+    resolve_progress_settings,
+)
+from games_bench.bench.progress import build_episode_progress_reporter
 from games_bench.bench.registry import (
     get_benchmark,
     list_benchmarks,
@@ -51,6 +55,43 @@ def _resolve_config(args: argparse.Namespace) -> dict[str, Any]:
     return merge_dicts(suite_config, file_config)
 
 
+def _estimate_episode_total(
+    *,
+    args: argparse.Namespace,
+    game_configs: list[tuple[str, Any, dict[str, Any]]],
+    progress_enabled: bool,
+    progress_explicit: bool,
+) -> tuple[int, bool]:
+    if not progress_enabled:
+        return (0, False)
+
+    total_episodes = 0
+    can_estimate_all = True
+    for _game_name, benchmark, game_config in game_configs:
+        estimator = benchmark.estimate_episodes
+        if estimator is None:
+            can_estimate_all = False
+            continue
+        try:
+            estimate = int(estimator(args, game_config))
+        except Exception:
+            can_estimate_all = False
+            continue
+        total_episodes += max(0, estimate)
+
+    if can_estimate_all and total_episodes > 0:
+        return (total_episodes, True)
+
+    if progress_explicit and progress_enabled:
+        print(
+            "Progress requested but episode totals could not be estimated for all "
+            "selected benchmarks. Progress disabled.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return (0, False)
+
+
 def _run_single_game(
     game_name: str,
     argv: list[str],
@@ -75,7 +116,29 @@ def _run_single_game(
         bench_defaults,
         merge_dicts(global_defaults, games_map.get(game_name, {})),
     )
-    game_run_dirs = benchmark.batch_runner(args, game_config)
+    progress_enabled, progress_refresh_s, progress_explicit = resolve_progress_settings(
+        args, config
+    )
+    game_configs = [(game_name, benchmark, game_config)]
+    total_episodes, progress_ready = _estimate_episode_total(
+        args=args,
+        game_configs=game_configs,
+        progress_enabled=progress_enabled,
+        progress_explicit=progress_explicit,
+    )
+    reporter = build_episode_progress_reporter(
+        enabled=progress_ready,
+        total_episodes=total_episodes,
+        refresh_s=progress_refresh_s,
+        explicit_request=progress_explicit,
+    )
+    setattr(args, "_progress_reporter", reporter)
+    try:
+        game_run_dirs = benchmark.batch_runner(args, game_config)
+    finally:
+        if hasattr(args, "_progress_reporter"):
+            delattr(args, "_progress_reporter")
+        reporter.close()
     return [str(p) for p in game_run_dirs]
 
 
@@ -103,7 +166,7 @@ def _run_config_mode(argv: list[str]) -> list[str]:
     if unknown_games:
         parser.error(f"Unknown game(s): {', '.join(unknown_games)}")
 
-    run_dirs: list[str] = []
+    prepared_runs: list[tuple[str, Any, dict[str, Any]]] = []
     for game_name in selected_games:
         benchmark = get_benchmark(game_name)
         bench_defaults = benchmark.default_config() if benchmark.default_config else {}
@@ -111,8 +174,34 @@ def _run_config_mode(argv: list[str]) -> list[str]:
             bench_defaults,
             merge_dicts(global_defaults, games_map.get(game_name, {})),
         )
-        game_run_dirs = benchmark.batch_runner(args, game_config)
-        run_dirs.extend([str(p) for p in game_run_dirs])
+        prepared_runs.append((game_name, benchmark, game_config))
+
+    progress_enabled, progress_refresh_s, progress_explicit = resolve_progress_settings(
+        args, config
+    )
+    total_episodes, progress_ready = _estimate_episode_total(
+        args=args,
+        game_configs=prepared_runs,
+        progress_enabled=progress_enabled,
+        progress_explicit=progress_explicit,
+    )
+    reporter = build_episode_progress_reporter(
+        enabled=progress_ready,
+        total_episodes=total_episodes,
+        refresh_s=progress_refresh_s,
+        explicit_request=progress_explicit,
+    )
+    setattr(args, "_progress_reporter", reporter)
+
+    run_dirs: list[str] = []
+    try:
+        for _game_name, benchmark, game_config in prepared_runs:
+            game_run_dirs = benchmark.batch_runner(args, game_config)
+            run_dirs.extend([str(p) for p in game_run_dirs])
+    finally:
+        if hasattr(args, "_progress_reporter"):
+            delattr(args, "_progress_reporter")
+        reporter.close()
     return run_dirs
 
 

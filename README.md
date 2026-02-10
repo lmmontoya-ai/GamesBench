@@ -11,14 +11,16 @@ Optional dependency groups:
 
 - LLM providers: `uv sync --group llm`
 - Visualization/review images: `uv sync --group viz`
-- Everything: `uv sync --group llm --group viz`
+- Benchmark CLI progress UI: `uv sync --group bench`
+- Everything: `uv sync --group llm --group viz --group bench`
 
 Equivalent `pip` installs:
 
 - Core: `pip install games-bench`
 - LLM: `pip install 'games-bench[llm]'`
 - Viz: `pip install 'games-bench[viz]'`
-- All optional: `pip install 'games-bench[llm,viz]'`
+- Bench progress: `pip install 'games-bench[bench]'`
+- All optional: `pip install 'games-bench[llm,viz,bench]'`
 
 CLI invocation:
 
@@ -104,6 +106,8 @@ Notes:
   - `--max-inflight-provider` caps provider requests in-flight across workers.
   - `--stagnation-patience` early-stops episodes after repeated no-change turns.
   - `--stateless` disables turn-history context (default is stateful).
+  - `--progress/--no-progress` toggles tqdm episode progress (default auto on TTY stderr).
+  - `--progress-refresh-s` controls minimum refresh interval.
 
 ## Config Model
 
@@ -114,6 +118,7 @@ Batch config precedence:
 `config.json` supports:
 
 - Global keys: `models`, `spec`, `stateless`, `out_dir`, `record`, `record_raw`, `record_provider_raw`, `provider_retries`, `provider_backoff`, `stream_debug`, `parallelism`, `max_inflight_provider`, `stagnation_patience`
+  - Progress keys: `progress`, `progress_refresh_s`
 - Per-game keys under `"games"`:
   - Hanoi: `cases` (exact `{n_pegs,n_disks}` tuples), or `n_pegs` + `n_disks` (cartesian product), plus `runs_per_variant`, `prompt_variants`, `tool_variants`, `start_peg`, `goal_peg`, `state_format`, `image_size`, `image_labels`, `image_background`, `optimal_turn_cap_multiplier`
   - Sokoban (bundled): `level_sets` / `level_ids`, `runs_per_level`, `max_optimal_moves`, `prompt_variants`, `tool_variants`, `detect_deadlocks`, `terminal_on_deadlock`, `deadlock_patience`, `state_format`, `image_tile_size`, `image_labels`, `image_background`

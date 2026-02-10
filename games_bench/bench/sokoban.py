@@ -1114,6 +1114,9 @@ def _run_sokoban_episode_job(
     )
     terminated_early = bool(getattr(result, "terminated_early", False))
     termination_reason = getattr(result, "termination_reason", None)
+    turn_count = sum(
+        1 for event in result.events if event.get("type") == "provider_result"
+    )
 
     metrics = result.game_metrics
     move_ratio = (
@@ -1135,6 +1138,7 @@ def _run_sokoban_episode_job(
     boxes_on_goals_ratio = _ratio(metrics.get("boxes_on_goals"), metrics.get("n_boxes"))
     episode = {
         "episode_id": job.episode_id,
+        "game": "sokoban",
         "variant_id": job.variant_id,
         "run_idx": job.run_idx,
         "provider": provider_name,
@@ -1150,6 +1154,7 @@ def _run_sokoban_episode_job(
         "grid_size": metrics.get("grid_size"),
         "solved": result.solved,
         "deadlocked": bool(metrics.get("deadlocked", False)),
+        "turn_count": turn_count,
         "move_count": metrics.get("move_count", result.move_count),
         "push_count": metrics.get("push_count"),
         "illegal_moves": result.illegal_moves,
@@ -1229,6 +1234,7 @@ def _commit_sokoban_episode_output(
     raw_file: Any,
     record: bool,
     recordings_dir: Path,
+    progress_reporter: Any | None = None,
 ) -> None:
     episode = dict(output.episode)
     if record and output.recording is not None:
@@ -1249,6 +1255,8 @@ def _commit_sokoban_episode_output(
     )
     for line in output.raw_lines:
         raw_file.write(line + "\n")
+    if progress_reporter is not None:
+        progress_reporter.on_episode_complete(episode)
 
 
 def add_sokoban_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1318,6 +1326,101 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def estimate_episodes(
+    args: argparse.Namespace,
+    config: dict[str, Any] | None,
+    *,
+    game_name: str = "sokoban",  # noqa: ARG001
+) -> int:
+    config = config or {}
+    provider_name = getattr(args, "provider", None)
+    if not provider_name:
+        raise SystemExit("Missing required argument: --provider")
+    model_arg = getattr(args, "model", None)
+    models = _resolve_models(provider_name, config, model_arg)
+    if not models:
+        raise SystemExit("No models provided. Use --model or config.json.")
+
+    levels = _select_levels(args, config)
+    runs_per_level = _resolve_positive_int(
+        getattr(args, "runs_per_level", None), config, "runs_per_level", 1
+    )
+
+    prompt_variants = DEFAULT_PROMPT_VARIANTS
+    selected_prompt_names = _parse_str_list(
+        [
+            getattr(args, "prompt_variants", None)
+            or config.get("prompt_variants", ["minimal"])
+        ]
+    )
+    if not selected_prompt_names:
+        raise SystemExit("No prompt variants selected.")
+    unknown_prompt_variants = [
+        name for name in selected_prompt_names if name not in prompt_variants
+    ]
+    if unknown_prompt_variants:
+        raise SystemExit(
+            "Unknown Sokoban prompt variant(s): "
+            + ", ".join(sorted(set(unknown_prompt_variants)))
+        )
+    selected_prompt_variants = [prompt_variants[name] for name in selected_prompt_names]
+
+    tool_variants = DEFAULT_TOOL_VARIANTS
+    selected_tool_names = _parse_str_list(
+        [
+            getattr(args, "tool_variants", None)
+            or config.get("tool_variants", ["move_only"])
+        ]
+    )
+    if not selected_tool_names:
+        raise SystemExit("No tool variants selected.")
+    unknown_tool_variants = [
+        name for name in selected_tool_names if name not in tool_variants
+    ]
+    if unknown_tool_variants:
+        raise SystemExit(
+            "Unknown Sokoban tool variant(s): "
+            + ", ".join(sorted(set(unknown_tool_variants)))
+        )
+    selected_tool_variants = [tool_variants[name] for name in selected_tool_names]
+
+    allowed_tools_override = getattr(args, "allowed_tools", None) or config.get(
+        "allowed_tools"
+    )
+    if allowed_tools_override:
+        allowed_tools = _parse_str_list([allowed_tools_override])
+        if not allowed_tools:
+            raise SystemExit("allowed_tools override must include at least one tool.")
+        selected_tool_variants = [
+            ToolVariant(
+                name="custom",
+                allowed_tools=allowed_tools,
+                terminal_on_deadlock_override=None,
+            )
+        ]
+
+    for prompt_variant in selected_prompt_variants:
+        for tool_variant in selected_tool_variants:
+            if (
+                prompt_variant.include_legal_moves
+                and tool_variant.allowed_tools is not None
+                and "sokoban_get_legal_moves" not in set(tool_variant.allowed_tools)
+            ):
+                raise SystemExit(
+                    f"Prompt variant '{prompt_variant.name}' requires tool "
+                    "'sokoban_get_legal_moves', but it is unavailable in "
+                    f"tools variant '{tool_variant.name}'."
+                )
+
+    episodes_per_model = (
+        len(levels)
+        * len(selected_prompt_variants)
+        * len(selected_tool_variants)
+        * runs_per_level
+    )
+    return len(models) * episodes_per_model
+
+
 def run_batch(
     args: argparse.Namespace,
     config: dict[str, Any] | None,
@@ -1325,6 +1428,7 @@ def run_batch(
     game_name: str = "sokoban",
 ) -> list[Path]:
     config = config or {}
+    progress_reporter = getattr(args, "_progress_reporter", None)
     provider_name = getattr(args, "provider", None)
     if not provider_name:
         raise SystemExit("Missing required argument: --provider")
@@ -1705,6 +1809,7 @@ def run_batch(
                         raw_file=raw_file,
                         record=record,
                         recordings_dir=recordings_dir,
+                        progress_reporter=progress_reporter,
                     )
             else:
                 with ThreadPoolExecutor(max_workers=parallelism) as executor:
@@ -1722,6 +1827,7 @@ def run_batch(
                                 raw_file=raw_file,
                                 record=record,
                                 recordings_dir=recordings_dir,
+                                progress_reporter=progress_reporter,
                             )
                             next_episode_id += 1
 

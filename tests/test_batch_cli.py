@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from games_bench.bench import batch
 
@@ -24,6 +25,7 @@ class TestBatchCli(unittest.TestCase):
         self.assertIn("--max-inflight-provider", output)
         self.assertIn("--stagnation-patience", output)
         self.assertIn("--stateless", output)
+        self.assertIn("--progress", output)
         self.assertIn("--suite", output)
         self.assertIn("--list-suites", output)
         self.assertIn("--game", output)
@@ -94,6 +96,60 @@ class TestBatchCli(unittest.TestCase):
         names = {entry["name"] for entry in payload["suites"]}
         self.assertIn("easy-v1", names)
         self.assertIn("standard-v1", names)
+
+    def test_progress_reporter_updates_without_polluting_stdout(self) -> None:
+        class _Recorder:
+            def __init__(self) -> None:
+                self.completed = 0
+                self.closed = False
+
+            def on_episode_complete(self, episode):  # noqa: ANN001
+                self.completed += 1
+
+            def close(self) -> None:
+                self.closed = True
+
+        reporter = _Recorder()
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with patch(
+                "games_bench.bench.batch.build_episode_progress_reporter",
+                return_value=reporter,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    rc = batch.main(
+                        [
+                            "hanoi",
+                            "--provider",
+                            "cli",
+                            "--cli-cmd",
+                            cmd,
+                            "--n-pegs",
+                            "3",
+                            "--n-disks",
+                            "1",
+                            "--runs-per-variant",
+                            "1",
+                            "--prompt-variant",
+                            "minimal",
+                            "--tools-variant",
+                            "move_only",
+                            "--max-turns",
+                            "1",
+                            "--progress",
+                            "--out-dir",
+                            tmp,
+                        ]
+                    )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+            self.assertEqual(reporter.completed, 1)
+            self.assertTrue(reporter.closed)
 
     def test_suite_easy_v1_applies_hanoi_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
