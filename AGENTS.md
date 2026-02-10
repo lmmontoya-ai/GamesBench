@@ -79,3 +79,65 @@ These files are thin re-exports. Do not add logic to them:
 - `games_bench/llm/game_adapter.py` → `games_bench.games.adapter`
 - `games_bench/bench/hanoi_adapter.py` → `games_bench.games.hanoi.adapter`
 - `games_bench/llm/prompting.py` — deprecated, empty
+
+## Memory bank (living context)
+
+Last updated: 2026-02-10
+
+### Project goals
+
+- Build a reproducible benchmark for **long-horizon planning** and **spatial reasoning**.
+- Use diverse games where model behavior can be measured through trajectories, not only final answers.
+- Keep the game engine standalone and reusable outside benchmark orchestration.
+
+### Current benchmark status
+
+- Canonical games:
+  - `hanoi` (planning/search + long horizon)
+  - `sokoban` (spatial reasoning + deadlock/irreversibility)
+- Canonical suites:
+  - `easy-v1` (small-model-friendly)
+  - `standard-v1` (harder canonical benchmark)
+- Interaction modes:
+  - stateful is default
+  - stateless via `--stateless`
+  - spec naming is suffixed as `-stateful` / `-stateless`
+
+### Operational maturity progress
+
+Phase 1 (implemented):
+
+- Run lineage/provenance:
+  - `run_manifest.json` per run with git/platform/hash metadata.
+- Generation/scoring separation:
+  - `games-bench score --run-dir <run_dir>` for offline scoring.
+  - `--no-score` for generation-only runs.
+- Standardized taxonomy:
+  - episodes include `outcome_code`, `failure_tags`, `taxonomy_version`.
+
+Phase 2 (implemented):
+
+- Shared bench executor:
+  - centralized ordered episode commit + artifact writing in `games_bench/bench/executor.py`.
+- Checkpoint/resume:
+  - `execution_state.json` tracking completed episodes.
+  - CLI flags: `--run-id`, `--resume`, `--strict-resume`, `--checkpoint-interval`.
+
+### Current artifact contract
+
+Runs under `artifacts/runs/...` include:
+
+- `run_config.json`
+- `run_manifest.json`
+- `execution_state.json`
+- `episodes.jsonl`
+- `traces.jsonl`
+- `summary.json` (unless `--no-score`)
+- optional `recordings/` and `raw_generations.jsonl`
+
+### Next priorities
+
+- Phase 3: regression governance via `games-bench compare` (baseline vs candidate + thresholds + exit-code gating).
+- Phase 4: additional hardening and CI checks around resume/recovery/compare workflows.
+
+Reference implementation plan: `BENCH_MATURITY_PLAN.md`
