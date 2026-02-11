@@ -27,6 +27,7 @@ def build_provider(
     provider_retries: int | None = None,
     provider_backoff: float | None = None,
     stream_debug: bool | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> Any:
     retries = provider_retries
     if retries is None:
@@ -52,10 +53,13 @@ def build_provider(
             retry_backoff_s=float(backoff),
             stream_debug=bool(debug),
             timeout_s=int(getattr(args, "timeout_s", 300)),
+            parallel_tool_calls=parallel_tool_calls,
         )
     if args.provider == "openai":
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-        return OpenAIResponsesProvider(model=model)
+        return OpenAIResponsesProvider(
+            model=model, parallel_tool_calls=parallel_tool_calls
+        )
     if args.provider == "codex":
         return CodexCLIProvider(
             codex_path=args.codex_path,

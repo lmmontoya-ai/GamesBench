@@ -174,6 +174,8 @@ Important fields:
 - `spec`: `<spec>-stateful` or `<spec>-stateless`
 - `interaction_mode`: `stateful` or `stateless`
 - `episodes.jsonl` includes taxonomy fields: `outcome_code`, `failure_tags`, `taxonomy_version`
+- `raw_generations.jsonl` rows are turn-scoped and include `actions[]` with per-action
+  `tool_call`, `tool_result`, and post-action state/image metadata when available.
 
 ## Config model
 
@@ -194,7 +196,7 @@ Global config keys (top-level):
 - Provider controls: `provider_retries`, `provider_backoff`, `stream_debug`
 - Throughput controls: `parallelism`, `max_inflight_provider`
 - Stop controls: `stagnation_patience`
-- Tool-call controls: `max_tool_calls_per_turn`
+- Tool-call controls: `max_tool_calls_per_turn` (CLI alias: `--max-actions-per-turn`)
 - Resume controls: `run_id`, `resume`, `strict_resume`, `checkpoint_interval`
 - Progress controls: `progress`, `progress_refresh_s`
 - Scoring controls: `score` (default true), `score_version` (default `score-v1`)

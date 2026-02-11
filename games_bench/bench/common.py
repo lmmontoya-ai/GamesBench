@@ -97,6 +97,7 @@ def add_common_batch_arguments(
     )
     parser.add_argument(
         "--max-tool-calls-per-turn",
+        "--max-actions-per-turn",
         type=int,
         default=None,
         help=(

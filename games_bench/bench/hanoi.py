@@ -193,6 +193,7 @@ def _build_provider(
     provider_retries: int | None = None,
     provider_backoff: float | None = None,
     stream_debug: bool | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> Any:
     return _shared_build_provider(
         args,
@@ -200,6 +201,7 @@ def _build_provider(
         provider_retries=provider_retries,
         provider_backoff=provider_backoff,
         stream_debug=stream_debug,
+        parallel_tool_calls=parallel_tool_calls,
     )
 
 
@@ -416,7 +418,34 @@ def _write_raw_generations(
     last_snapshot: dict[str, Any] | None = None
     last_image_meta: dict[str, Any] | None = None
     current: dict[str, Any] | None = None
-    turn_index = 0
+    pending_action: dict[str, Any] | None = None
+    fallback_turn_index = 0
+
+    def _flush_current(*, incomplete: bool) -> None:
+        nonlocal current, pending_action, fallback_turn_index
+        if current is None:
+            return
+        actions = current.get("actions")
+        if (
+            isinstance(actions, list)
+            and len(actions) == 1
+            and isinstance(actions[0], dict)
+        ):
+            only = actions[0]
+            tool_call = only.get("tool_call")
+            tool_result = only.get("tool_result")
+            if isinstance(tool_call, dict):
+                current["tool_call"] = tool_call
+            if tool_result is not None:
+                current["tool_result"] = tool_result
+            if only.get("tool_result_meta") is not None:
+                current["tool_result_meta"] = only.get("tool_result_meta")
+        if incomplete:
+            current["incomplete"] = True
+        out_file.write(json.dumps(current) + "\n")
+        current = None
+        pending_action = None
+        fallback_turn_index += 1
 
     for event in events:
         event_type = event.get("type")
@@ -427,7 +456,15 @@ def _write_raw_generations(
             last_image_meta = event.get("meta")
             continue
         if event_type == "state":
+            if current is not None:
+                _flush_current(incomplete=bool(pending_action))
             state_text = event.get("state_text", event.get("state"))
+            raw_turn_index = event.get("turn_index")
+            resolved_turn_index = (
+                int(raw_turn_index)
+                if isinstance(raw_turn_index, int)
+                else fallback_turn_index
+            )
             prompt_text = (
                 f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
                 f"{json.dumps(tool_schemas, indent=2)}"
@@ -435,7 +472,7 @@ def _write_raw_generations(
             current = {
                 "episode_id": episode_id,
                 "variant_id": variant_id,
-                "turn_index": turn_index,
+                "turn_index": resolved_turn_index,
                 "prompt": {
                     "instructions": instructions,
                     "state_text": state_text,
@@ -452,7 +489,9 @@ def _write_raw_generations(
                     ),
                 },
                 "state_snapshot": last_snapshot,
+                "actions": [],
             }
+            pending_action = None
             continue
         if event_type == "provider_result":
             if current is not None:
@@ -463,25 +502,63 @@ def _write_raw_generations(
                     "raw": event.get("raw"),
                 }
             continue
+        if event_type == "tool_calls_truncated":
+            if current is not None:
+                current["tool_calls_truncated"] = {
+                    "requested": event.get("requested"),
+                    "executed": event.get("executed"),
+                    "max_tool_calls_per_turn": event.get("max_tool_calls_per_turn"),
+                }
+            continue
         if event_type == "tool_call":
             if current is not None:
-                current["tool_call"] = {
+                pending_action = {
                     "name": event.get("name"),
                     "arguments": event.get("arguments"),
                 }
             continue
         if event_type == "tool_result":
             if current is not None:
-                current["tool_result"] = event.get("result")
+                action_payload = {
+                    "tool_call": pending_action,
+                    "tool_result": event.get("result"),
+                }
                 if event.get("meta") is not None:
-                    current["tool_result_meta"] = event.get("meta")
-                out_file.write(json.dumps(current) + "\n")
-                current = None
-                turn_index += 1
+                    action_payload["tool_result_meta"] = event.get("meta")
+                current_actions = current.setdefault("actions", [])
+                if isinstance(current_actions, list):
+                    current_actions.append(action_payload)
+                pending_action = None
+            continue
+        if event_type == "action_state":
+            if current is not None:
+                current_actions = current.get("actions")
+                if isinstance(current_actions, list) and current_actions:
+                    last_action = current_actions[-1]
+                    if isinstance(last_action, dict):
+                        last_action["state_after_snapshot"] = event.get("state")
+                        last_action["state_after_text"] = event.get("state_text")
+            continue
+        if event_type == "action_state_image":
+            if current is not None:
+                current_actions = current.get("actions")
+                if isinstance(current_actions, list) and current_actions:
+                    last_action = current_actions[-1]
+                    if isinstance(last_action, dict):
+                        last_action["state_after_image"] = {
+                            "meta": event.get("meta"),
+                            "config": image_config,
+                        }
+            continue
 
     if current is not None:
-        current["incomplete"] = True
-        out_file.write(json.dumps(current) + "\n")
+        if pending_action is not None:
+            current_actions = current.setdefault("actions", [])
+            if isinstance(current_actions, list):
+                current_actions.append(
+                    {"tool_call": pending_action, "incomplete": True}
+                )
+        _flush_current(incomplete=bool(pending_action))
 
 
 def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -939,6 +1016,7 @@ def _run_hanoi_episode_job(
         include_legal_moves=pv.include_legal_moves,
         include_action_space=pv.include_action_space,
     )
+    trace_state_formatter = state_formatter
     if state_format == "image":
         state_formatter = lambda _a: "State image attached."
 
@@ -972,6 +1050,7 @@ def _run_hanoi_episode_job(
         max_turns=effective_max_turns,
         instructions=instructions,
         state_formatter=state_formatter,
+        trace_state_formatter=trace_state_formatter,
         state_image_renderer=state_image_renderer,
         allowed_tools=job.tool_variant.allowed_tools,
         record_provider_raw=record_provider_raw,
@@ -1257,10 +1336,15 @@ def run_batch(
         config,
         "stagnation_patience",
     )
+    max_tool_calls_key = (
+        "max_tool_calls_per_turn"
+        if "max_tool_calls_per_turn" in config
+        else "max_actions_per_turn"
+    )
     max_tool_calls_per_turn = _resolve_positive_int(
         getattr(args, "max_tool_calls_per_turn", None),
         config,
-        "max_tool_calls_per_turn",
+        max_tool_calls_key,
         1,
     )
     optimal_turn_cap_multiplier = _resolve_optional_positive_float(
@@ -1443,6 +1527,7 @@ def run_batch(
                     provider_retries=provider_retries,
                     provider_backoff=provider_backoff,
                     stream_debug=stream_debug,
+                    parallel_tool_calls=bool(max_tool_calls_per_turn > 1),
                 )
                 provider = _ThrottledProvider(base_provider, provider_semaphore)
                 provider_local.provider = provider
@@ -1532,6 +1617,7 @@ def run_batch(
                 "max_inflight_provider": max_inflight_provider,
                 "stagnation_patience": stagnation_patience,
                 "max_tool_calls_per_turn": max_tool_calls_per_turn,
+                "parallel_tool_calls": bool(max_tool_calls_per_turn > 1),
                 "optimal_turn_cap_multiplier": optimal_turn_cap_multiplier,
                 "prompt_variants": [asdict(v) for v in selected_prompt_variants],
                 "tool_variants": [asdict(v) for v in selected_tool_variants],

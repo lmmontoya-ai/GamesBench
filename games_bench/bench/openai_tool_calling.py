@@ -58,13 +58,23 @@ def main() -> int:
     )
     parser.add_argument("--max-turns", type=int, default=200)
     parser.add_argument(
+        "--max-tool-calls-per-turn",
+        "--max-actions-per-turn",
+        type=int,
+        default=1,
+        help="Maximum number of tool calls executed from one provider response.",
+    )
+    parser.add_argument(
         "--model",
         default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
         help="OpenAI model name (default: OPENAI_MODEL or gpt-4.1-mini).",
     )
     args = parser.parse_args()
 
-    provider = OpenAIResponsesProvider(model=args.model)
+    provider = OpenAIResponsesProvider(
+        model=args.model,
+        parallel_tool_calls=bool(int(args.max_tool_calls_per_turn) > 1),
+    )
     _env, adapter = build_env_and_adapter(args.game, env_kwargs=_build_env_kwargs(args))
 
     move_tools = _move_tool_names(adapter)
@@ -83,6 +93,7 @@ def main() -> int:
         adapter,
         provider,
         max_turns=args.max_turns,
+        max_tool_calls_per_turn=int(args.max_tool_calls_per_turn),
         instructions=instructions,
         allowed_tools=[move_tools[0]],
     )
