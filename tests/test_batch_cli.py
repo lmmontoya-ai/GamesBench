@@ -31,6 +31,7 @@ class TestBatchCli(unittest.TestCase):
         self.assertIn("--strict-resume", output)
         self.assertIn("--checkpoint-interval", output)
         self.assertIn("--stagnation-patience", output)
+        self.assertIn("--max-actions-per-turn", output)
         self.assertIn("--stateless", output)
         self.assertIn("--no-score", output)
         self.assertIn("--progress", output)

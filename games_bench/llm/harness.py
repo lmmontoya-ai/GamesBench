@@ -107,6 +107,16 @@ def _state_message_content(
     return parts or state_text
 
 
+def _state_image_meta(state_image: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not state_image:
+        return None
+    return {
+        "mime_type": state_image.get("mime_type"),
+        "width": state_image.get("width"),
+        "height": state_image.get("height"),
+    }
+
+
 def _compact_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -118,6 +128,7 @@ def run_tool_calling_episode(
     max_turns: int = 200,
     instructions: str | None = None,
     state_formatter: Callable[[GameAdapter], str] | None = None,
+    trace_state_formatter: Callable[[GameAdapter], str] | None = None,
     state_image_renderer: Callable[[GameAdapter], dict[str, Any]] | None = None,
     allowed_tools: list[str] | None = None,
     record_provider_raw: bool = False,
@@ -139,6 +150,7 @@ def run_tool_calling_episode(
 
     instructions = instructions or adapter.default_instructions()
     state_formatter = state_formatter or (lambda a: a.format_state())
+    trace_state_formatter = trace_state_formatter or state_formatter
     if state_image_renderer and not getattr(provider, "supports_images", False):
         raise ValueError("Provider does not support image inputs.")
     if stagnation_patience is not None and int(stagnation_patience) < 1:
@@ -169,10 +181,11 @@ def run_tool_calling_episode(
     if not stateless:
         conversation = [{"role": "system", "content": instructions}]
 
-    for _ in range(max_turns):
+    for turn_index in range(max_turns):
         if adapter.is_solved():
             break
         state_text = state_formatter(adapter)
+        trace_state_text = trace_state_formatter(adapter)
         state_image = state_image_renderer(adapter) if state_image_renderer else None
         snapshot = adapter.get_state_snapshot()
         snapshot_key = _snapshot_key(snapshot)
@@ -194,17 +207,31 @@ def run_tool_calling_episode(
             state_payload = json.loads(state_text)
         except json.JSONDecodeError:
             state_payload = state_text
-        events.append({"type": "state_snapshot", "state": snapshot})
         events.append(
-            {"type": "state", "state": state_payload, "state_text": state_text}
-        )
-        if state_image:
-            meta = {
-                "mime_type": state_image.get("mime_type"),
-                "width": state_image.get("width"),
-                "height": state_image.get("height"),
+            {
+                "type": "state_snapshot",
+                "state": snapshot,
+                "turn_index": turn_index,
             }
-            events.append({"type": "state_image", "meta": meta})
+        )
+        events.append(
+            {
+                "type": "state",
+                "state": state_payload,
+                "state_text": state_text,
+                "trace_state_text": trace_state_text,
+                "turn_index": turn_index,
+            }
+        )
+        state_image_meta = _state_image_meta(state_image)
+        if state_image_meta:
+            events.append(
+                {
+                    "type": "state_image",
+                    "meta": state_image_meta,
+                    "turn_index": turn_index,
+                }
+            )
         if terminate_on_deadlock_check and is_deadlocked:
             terminated_early = True
             termination_reason = "deadlock_terminal"
@@ -214,6 +241,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "turn_index": turn_index,
                 }
             )
             break
@@ -228,6 +256,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "turn_index": turn_index,
                 }
             )
             break
@@ -240,6 +269,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "turn_index": turn_index,
                 }
             )
             break
@@ -267,7 +297,11 @@ def run_tool_calling_episode(
             cost_total += result.cost
             cost_seen = True
 
-        provider_event = {"type": "provider_result", "error": result.error}
+        provider_event = {
+            "type": "provider_result",
+            "error": result.error,
+            "turn_index": turn_index,
+        }
         if result.usage:
             provider_event["usage"] = result.usage
         if result.cost is not None:
@@ -292,11 +326,12 @@ def run_tool_calling_episode(
                     "requested": len(requested_calls),
                     "executed": len(executed_calls),
                     "max_tool_calls_per_turn": int(max_tool_calls_per_turn),
+                    "turn_index": turn_index,
                 }
             )
 
         stop_turn = False
-        for call in executed_calls:
+        for action_index, call in enumerate(executed_calls):
             if conversation is not None:
                 conversation.append(
                     {
@@ -331,11 +366,50 @@ def run_tool_calling_episode(
                 elif not tool_result.get("ok", False):
                     illegal_moves += 1
             events.append(
-                {"type": "tool_call", "name": call.name, "arguments": call.arguments}
+                {
+                    "type": "tool_call",
+                    "name": call.name,
+                    "arguments": call.arguments,
+                    "turn_index": turn_index,
+                    "action_index": action_index,
+                }
             )
             events.append(
-                {"type": "tool_result", "result": tool_result, "meta": tool_meta}
+                {
+                    "type": "tool_result",
+                    "result": tool_result,
+                    "meta": tool_meta,
+                    "turn_index": turn_index,
+                    "action_index": action_index,
+                }
             )
+
+            # Capture a canonical post-action state trail for multi-action turns.
+            action_state_snapshot = adapter.get_state_snapshot()
+            action_state_text = trace_state_formatter(adapter)
+            events.append(
+                {
+                    "type": "action_state",
+                    "state": action_state_snapshot,
+                    "state_text": action_state_text,
+                    "tool_name": call.name,
+                    "turn_index": turn_index,
+                    "action_index": action_index,
+                }
+            )
+            if state_image_renderer is not None:
+                action_state_image = state_image_renderer(adapter)
+                action_state_image_meta = _state_image_meta(action_state_image)
+                if action_state_image_meta:
+                    events.append(
+                        {
+                            "type": "action_state_image",
+                            "meta": action_state_image_meta,
+                            "tool_name": call.name,
+                            "turn_index": turn_index,
+                            "action_index": action_index,
+                        }
+                    )
             if conversation is not None:
                 conversation.append(
                     {
@@ -356,6 +430,8 @@ def run_tool_calling_episode(
                         "reason": termination_reason,
                         "stagnation_turns": stagnation_turns,
                         "deadlock_turns": deadlock_turns,
+                        "turn_index": turn_index,
+                        "action_index": action_index,
                     }
                 )
                 stop_turn = True

@@ -257,6 +257,119 @@ class TestProviders(unittest.TestCase):
         self.assertIn("Provider error after retries", result.error or "")
         self.assertNotIn("No tool calls returned.", result.error or "")
 
+    def test_openrouter_forwards_parallel_tool_calls_flag(self) -> None:
+        class FakeOpenAI:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+        fake_openai_module = types.SimpleNamespace(OpenAI=FakeOpenAI)
+
+        def import_with_fake_openai(
+            name: str,
+            globals=None,
+            locals=None,
+            fromlist=(),
+            level: int = 0,
+        ):
+            if name == "openai":
+                return fake_openai_module
+            return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
+
+        provider = OpenRouterProvider(
+            model="openai/gpt-4.1-mini",
+            api_key="test",
+            parallel_tool_calls=False,
+        )
+        fake_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "hanoi_move",
+                                    "arguments": '{"from_peg":0,"to_peg":2}',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        with (
+            mock.patch("builtins.__import__", side_effect=import_with_fake_openai),
+            mock.patch.object(
+                provider, "_completion_payload", return_value=fake_payload
+            ) as patched_completion,
+        ):
+            result = provider.next_tool_calls(
+                state_text="{}",
+                tool_schemas=[],
+                instructions="Use tools.",
+            )
+
+        self.assertIsNone(result.error)
+        call_kwargs = patched_completion.call_args[0][1]
+        self.assertIn("parallel_tool_calls", call_kwargs)
+        self.assertFalse(bool(call_kwargs["parallel_tool_calls"]))
+
+    def test_openai_responses_forwards_parallel_tool_calls_flag(self) -> None:
+        create_calls: list[dict[str, object]] = []
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.output = [
+                    {
+                        "type": "function_call",
+                        "name": "hanoi_move",
+                        "arguments": '{"from_peg":0,"to_peg":2}',
+                    }
+                ]
+                self.usage = {"total_tokens": 1}
+
+            def model_dump(self) -> dict[str, object]:
+                return {"output": self.output, "usage": self.usage}
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                create_calls.append(dict(kwargs))
+                return FakeResponse()
+
+        class FakeOpenAI:
+            def __init__(self, **_kwargs) -> None:
+                self.responses = FakeResponses()
+
+        fake_openai_module = types.SimpleNamespace(OpenAI=FakeOpenAI)
+
+        def import_with_fake_openai(
+            name: str,
+            globals=None,
+            locals=None,
+            fromlist=(),
+            level: int = 0,
+        ):
+            if name == "openai":
+                return fake_openai_module
+            return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
+
+        provider = OpenAIResponsesProvider(
+            model="gpt-4.1-mini",
+            api_key="test",
+            parallel_tool_calls=True,
+        )
+        with mock.patch("builtins.__import__", side_effect=import_with_fake_openai):
+            result = provider.next_tool_calls(
+                state_text="{}",
+                tool_schemas=[],
+                instructions="Use tools.",
+            )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(len(create_calls), 1)
+        self.assertIn("parallel_tool_calls", create_calls[0])
+        self.assertTrue(bool(create_calls[0]["parallel_tool_calls"]))
+
 
 if __name__ == "__main__":
     unittest.main()

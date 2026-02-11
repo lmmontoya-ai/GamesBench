@@ -24,6 +24,7 @@ def _require_env(name: str) -> str:
 
 
 def _build_provider(args: argparse.Namespace) -> Any:
+    parallel_tool_calls = bool(int(args.max_tool_calls_per_turn) > 1)
     if args.provider == "openrouter":
         model = args.model or _require_env("OPENROUTER_MODEL")
         return OpenRouterProvider(
@@ -32,10 +33,13 @@ def _build_provider(args: argparse.Namespace) -> Any:
             retry_backoff_s=1.0,
             stream_debug=bool(args.stream_debug),
             timeout_s=int(args.timeout_s),
+            parallel_tool_calls=parallel_tool_calls,
         )
     if args.provider == "openai":
         model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-        return OpenAIResponsesProvider(model=model)
+        return OpenAIResponsesProvider(
+            model=model, parallel_tool_calls=parallel_tool_calls
+        )
     if args.provider == "codex":
         return CodexCLIProvider(
             codex_path=args.codex_path,
@@ -91,6 +95,13 @@ def main() -> int:
         help="Hanoi convenience flag (overrides env_kwargs.n_pegs).",
     )
     parser.add_argument("--max-turns", type=int, default=200)
+    parser.add_argument(
+        "--max-tool-calls-per-turn",
+        "--max-actions-per-turn",
+        type=int,
+        default=1,
+        help="Maximum number of tool calls executed from one provider response.",
+    )
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument(
         "--stream-debug",
@@ -119,7 +130,12 @@ def main() -> int:
         args.game,
         env_kwargs=_build_env_kwargs(args),
     )
-    result = run_tool_calling_episode(adapter, provider, max_turns=args.max_turns)
+    result = run_tool_calling_episode(
+        adapter,
+        provider,
+        max_turns=args.max_turns,
+        max_tool_calls_per_turn=int(args.max_tool_calls_per_turn),
+    )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0
 

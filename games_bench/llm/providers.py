@@ -274,6 +274,7 @@ class OpenRouterProvider:
         retry_backoff_s: float = 1.0,
         stream_debug: bool = False,
         timeout_s: int = 300,
+        parallel_tool_calls: bool | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -287,6 +288,9 @@ class OpenRouterProvider:
         self.retry_backoff_s = float(retry_backoff_s)
         self.stream_debug = bool(stream_debug)
         self.timeout_s = int(timeout_s)
+        self.parallel_tool_calls = (
+            bool(parallel_tool_calls) if parallel_tool_calls is not None else None
+        )
 
     def _stream_log(self, message: str) -> None:
         if not self.stream_debug:
@@ -542,6 +546,8 @@ class OpenRouterProvider:
             "tools": tools,
             "tool_choice": "required",
         }
+        if self.parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = self.parallel_tool_calls
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if self.max_tokens is not None:
@@ -663,6 +669,7 @@ class OpenAIResponsesProvider:
         api_key: str | None = None,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -670,6 +677,9 @@ class OpenAIResponsesProvider:
             raise ValueError("Missing OPENAI_API_KEY")
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
+        self.parallel_tool_calls = (
+            bool(parallel_tool_calls) if parallel_tool_calls is not None else None
+        )
 
     def next_tool_calls(
         self,
@@ -707,6 +717,8 @@ class OpenAIResponsesProvider:
                 else [{"role": "user", "content": state_text}]
             ),
         }
+        if self.parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = self.parallel_tool_calls
         if conversation is None:
             kwargs["instructions"] = instructions
         if self.temperature is not None:

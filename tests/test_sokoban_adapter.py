@@ -351,6 +351,45 @@ class TestSokobanGameAdapter(unittest.TestCase):
         self.assertEqual(result.tool_calls, 0)
         self.assertEqual(provider.calls, 0)
 
+    def test_harness_emits_action_state_sequence_for_multi_action_turn(self) -> None:
+        level = _level_from_xsb(
+            """#####
+#@$.#
+#####
+"""
+        )
+        adapter = SokobanGameAdapter(SokobanEnv(level))
+        provider = _ScriptedProvider(
+            [
+                ProviderResult(
+                    tool_calls=[
+                        ToolCall("sokoban_get_state", {}),
+                        ToolCall("sokoban_get_state", {}),
+                    ],
+                    raw={},
+                )
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=1,
+            max_tool_calls_per_turn=2,
+        )
+        action_states = [
+            event for event in result.events if event.get("type") == "action_state"
+        ]
+        self.assertEqual(len(action_states), 2)
+        self.assertEqual([event.get("action_index") for event in action_states], [0, 1])
+        self.assertEqual([event.get("turn_index") for event in action_states], [0, 0])
+        self.assertTrue(all("state" in event for event in action_states))
+        self.assertTrue(all("state_text" in event for event in action_states))
+        state_events = [
+            event for event in result.events if event.get("type") == "state"
+        ]
+        self.assertEqual(len(state_events), 1)
+        self.assertIn("trace_state_text", state_events[0])
+
 
 if __name__ == "__main__":
     unittest.main()
