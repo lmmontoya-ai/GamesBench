@@ -401,6 +401,30 @@ class TestHarness(unittest.TestCase):
                 max_tool_calls_per_turn=0,
             )
 
+    def test_usage_accumulation_does_not_double_count_overlapping_keys(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(
+                    tool_calls=[],
+                    raw=None,
+                    error="stop",
+                    usage={
+                        "prompt_tokens": 10,
+                        "input_tokens": 10,
+                        "completion_tokens": 4,
+                        "output_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                )
+            ]
+        )
+        result = run_tool_calling_episode(adapter, provider, max_turns=1)
+        self.assertEqual(
+            result.usage,
+            {"prompt_tokens": 10.0, "completion_tokens": 4.0, "total_tokens": 14.0},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

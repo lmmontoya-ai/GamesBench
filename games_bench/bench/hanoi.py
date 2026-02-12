@@ -24,6 +24,7 @@ from games_bench.bench.runner_shared import (
     parse_int_list as _shared_parse_int_list,
     parse_str_list as _shared_parse_str_list,
     resolve_checkpoint_interval as _shared_resolve_checkpoint_interval,
+    resolve_max_tool_calls_per_turn as _shared_resolve_max_tool_calls_per_turn,
     resolve_models as _shared_resolve_models,
     resolve_optional_positive_int as _shared_resolve_optional_positive_int,
     resolve_out_dir_base as _shared_resolve_out_dir_base,
@@ -418,14 +419,65 @@ def _write_raw_generations(
     last_snapshot: dict[str, Any] | None = None
     last_image_meta: dict[str, Any] | None = None
     current: dict[str, Any] | None = None
-    pending_action: dict[str, Any] | None = None
     fallback_turn_index = 0
+    actions_by_index: dict[int, dict[str, Any]] = {}
+    next_action_index = 0
+
+    def _coerce_action_index(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value >= 0:
+            return value
+        return None
+
+    def _get_actions_container() -> list[dict[str, Any]]:
+        if current is None:
+            return []
+        current_actions = current.setdefault("actions", [])
+        if isinstance(current_actions, list):
+            return current_actions
+        current["actions"] = []
+        return current["actions"]
+
+    def _upsert_action(index_hint: int | None) -> dict[str, Any] | None:
+        nonlocal next_action_index
+        if current is None:
+            return None
+        index = index_hint if index_hint is not None else next_action_index
+        if index < 0:
+            index = 0
+        next_action_index = max(next_action_index, index + 1)
+        existing = actions_by_index.get(index)
+        if existing is not None:
+            return existing
+        action = {"action_index": index}
+        actions_by_index[index] = action
+        actions = _get_actions_container()
+        actions.append(action)
+        actions.sort(
+            key=lambda row: (
+                int(row.get("action_index", 0))
+                if isinstance(row.get("action_index"), int)
+                else 0
+            )
+        )
+        return action
 
     def _flush_current(*, incomplete: bool) -> None:
-        nonlocal current, pending_action, fallback_turn_index
+        nonlocal current, fallback_turn_index, actions_by_index, next_action_index
         if current is None:
             return
         actions = current.get("actions")
+        incomplete_actions = False
+        if isinstance(actions, list):
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                has_call = isinstance(action.get("tool_call"), dict)
+                has_result = "tool_result" in action
+                if has_call != has_result:
+                    action["incomplete"] = True
+                    incomplete_actions = True
         if (
             isinstance(actions, list)
             and len(actions) == 1
@@ -440,11 +492,12 @@ def _write_raw_generations(
                 current["tool_result"] = tool_result
             if only.get("tool_result_meta") is not None:
                 current["tool_result_meta"] = only.get("tool_result_meta")
-        if incomplete:
+        if incomplete or incomplete_actions:
             current["incomplete"] = True
         out_file.write(json.dumps(current) + "\n")
         current = None
-        pending_action = None
+        actions_by_index = {}
+        next_action_index = 0
         fallback_turn_index += 1
 
     for event in events:
@@ -457,7 +510,7 @@ def _write_raw_generations(
             continue
         if event_type == "state":
             if current is not None:
-                _flush_current(incomplete=bool(pending_action))
+                _flush_current(incomplete=False)
             state_text = event.get("state_text", event.get("state"))
             raw_turn_index = event.get("turn_index")
             resolved_turn_index = (
@@ -491,7 +544,8 @@ def _write_raw_generations(
                 "state_snapshot": last_snapshot,
                 "actions": [],
             }
-            pending_action = None
+            actions_by_index = {}
+            next_action_index = 0
             continue
         if event_type == "provider_result":
             if current is not None:
@@ -511,54 +565,37 @@ def _write_raw_generations(
                 }
             continue
         if event_type == "tool_call":
-            if current is not None:
-                pending_action = {
+            action = _upsert_action(_coerce_action_index(event.get("action_index")))
+            if action is not None:
+                action["tool_call"] = {
                     "name": event.get("name"),
                     "arguments": event.get("arguments"),
                 }
             continue
         if event_type == "tool_result":
-            if current is not None:
-                action_payload = {
-                    "tool_call": pending_action,
-                    "tool_result": event.get("result"),
-                }
+            action = _upsert_action(_coerce_action_index(event.get("action_index")))
+            if action is not None:
+                action["tool_result"] = event.get("result")
                 if event.get("meta") is not None:
-                    action_payload["tool_result_meta"] = event.get("meta")
-                current_actions = current.setdefault("actions", [])
-                if isinstance(current_actions, list):
-                    current_actions.append(action_payload)
-                pending_action = None
+                    action["tool_result_meta"] = event.get("meta")
             continue
         if event_type == "action_state":
-            if current is not None:
-                current_actions = current.get("actions")
-                if isinstance(current_actions, list) and current_actions:
-                    last_action = current_actions[-1]
-                    if isinstance(last_action, dict):
-                        last_action["state_after_snapshot"] = event.get("state")
-                        last_action["state_after_text"] = event.get("state_text")
+            action = _upsert_action(_coerce_action_index(event.get("action_index")))
+            if action is not None:
+                action["state_after_snapshot"] = event.get("state")
+                action["state_after_text"] = event.get("state_text")
             continue
         if event_type == "action_state_image":
-            if current is not None:
-                current_actions = current.get("actions")
-                if isinstance(current_actions, list) and current_actions:
-                    last_action = current_actions[-1]
-                    if isinstance(last_action, dict):
-                        last_action["state_after_image"] = {
-                            "meta": event.get("meta"),
-                            "config": image_config,
-                        }
+            action = _upsert_action(_coerce_action_index(event.get("action_index")))
+            if action is not None:
+                action["state_after_image"] = {
+                    "meta": event.get("meta"),
+                    "config": image_config,
+                }
             continue
 
     if current is not None:
-        if pending_action is not None:
-            current_actions = current.setdefault("actions", [])
-            if isinstance(current_actions, list):
-                current_actions.append(
-                    {"tool_call": pending_action, "incomplete": True}
-                )
-        _flush_current(incomplete=bool(pending_action))
+        _flush_current(incomplete=False)
 
 
 def _compute_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1336,16 +1373,10 @@ def run_batch(
         config,
         "stagnation_patience",
     )
-    max_tool_calls_key = (
-        "max_tool_calls_per_turn"
-        if "max_tool_calls_per_turn" in config
-        else "max_actions_per_turn"
-    )
-    max_tool_calls_per_turn = _resolve_positive_int(
+    max_tool_calls_per_turn = _shared_resolve_max_tool_calls_per_turn(
         getattr(args, "max_tool_calls_per_turn", None),
         config,
-        max_tool_calls_key,
-        1,
+        default=1,
     )
     optimal_turn_cap_multiplier = _resolve_optional_positive_float(
         getattr(args, "optimal_turn_cap_multiplier", None),
