@@ -370,6 +370,52 @@ class TestProviders(unittest.TestCase):
         self.assertIn("parallel_tool_calls", create_calls[0])
         self.assertTrue(bool(create_calls[0]["parallel_tool_calls"]))
 
+    def test_openai_responses_provider_error_is_returned_not_raised(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                raise RuntimeError("transient network failure")
+
+        fake_responses = FakeResponses()
+
+        class FakeOpenAI:
+            def __init__(self, **_kwargs) -> None:
+                self.responses = fake_responses
+
+        fake_openai_module = types.SimpleNamespace(OpenAI=FakeOpenAI)
+
+        def import_with_fake_openai(
+            name: str,
+            globals=None,
+            locals=None,
+            fromlist=(),
+            level: int = 0,
+        ):
+            if name == "openai":
+                return fake_openai_module
+            return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
+
+        provider = OpenAIResponsesProvider(
+            model="gpt-4.1-mini",
+            api_key="test",
+            max_retries=1,
+            retry_backoff_s=0.0,
+        )
+        with mock.patch("builtins.__import__", side_effect=import_with_fake_openai):
+            result = provider.next_tool_calls(
+                state_text="{}",
+                tool_schemas=[],
+                instructions="Use tools.",
+            )
+
+        self.assertEqual(result.tool_calls, [])
+        self.assertIsNotNone(result.error)
+        self.assertIn("Provider error:", result.error or "")
+        self.assertEqual(fake_responses.calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

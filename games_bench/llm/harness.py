@@ -46,17 +46,22 @@ class EpisodeResult:
 def _accumulate_usage(total: dict[str, float], usage: dict[str, Any] | None) -> None:
     if not usage:
         return
-    mapping = {
-        "prompt_tokens": "prompt_tokens",
-        "completion_tokens": "completion_tokens",
-        "total_tokens": "total_tokens",
-        "input_tokens": "prompt_tokens",
-        "output_tokens": "completion_tokens",
-    }
-    for key, target in mapping.items():
-        value = usage.get(key)
-        if isinstance(value, (int, float)):
-            total[target] = total.get(target, 0.0) + float(value)
+    prompt_tokens = usage.get("prompt_tokens")
+    if not isinstance(prompt_tokens, (int, float)):
+        prompt_tokens = usage.get("input_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if not isinstance(completion_tokens, (int, float)):
+        completion_tokens = usage.get("output_tokens")
+    total_tokens = usage.get("total_tokens")
+
+    if isinstance(prompt_tokens, (int, float)):
+        total["prompt_tokens"] = total.get("prompt_tokens", 0.0) + float(prompt_tokens)
+    if isinstance(completion_tokens, (int, float)):
+        total["completion_tokens"] = total.get("completion_tokens", 0.0) + float(
+            completion_tokens
+        )
+    if isinstance(total_tokens, (int, float)):
+        total["total_tokens"] = total.get("total_tokens", 0.0) + float(total_tokens)
 
 
 def _snapshot_key(snapshot: Any) -> str:

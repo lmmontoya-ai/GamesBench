@@ -283,6 +283,52 @@ class TestHanoiBatch(unittest.TestCase):
         self.assertEqual(merged["runs_per_variant"], 4)
         self.assertEqual(merged["tool_variants"], ["move_only"])
 
+    def test_max_actions_per_turn_config_alias_is_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(
+                provider="cli",
+                model=None,
+                config=None,
+                max_turns=1,
+                out_dir=tmp,
+                timeout_s=1,
+                provider_retries=None,
+                provider_backoff=None,
+                cli_cmd='python -c "print(\'{\\"name\\":\\"hanoi_move\\",\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"',
+                no_stdin=False,
+                codex_path="codex",
+                codex_args=[],
+                record_provider_raw=False,
+                no_record_provider_raw=False,
+                record=False,
+                no_record=False,
+                record_raw=False,
+                no_record_raw=False,
+                cases=["3x1"],
+                n_pegs=None,
+                n_disks=None,
+                start_peg=None,
+                goal_peg=None,
+                runs_per_variant=1,
+                prompt_variants=["minimal"],
+                prompt_file=None,
+                tool_variants=["move_only"],
+                allowed_tools=None,
+                state_format="text",
+                image_size="64x64",
+                image_background="white",
+                image_labels=False,
+                no_image_labels=False,
+            )
+            run_dir = hanoi_bench.run_batch(
+                args,
+                config={"max_actions_per_turn": 2},
+                game_name="hanoi",
+            )[0]
+            run_config = json.loads((Path(run_dir) / "run_config.json").read_text())
+            self.assertEqual(run_config["max_tool_calls_per_turn"], 2)
+            self.assertTrue(run_config["parallel_tool_calls"])
+
     def test_run_batch_supports_n_pegs_variants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = argparse.Namespace(

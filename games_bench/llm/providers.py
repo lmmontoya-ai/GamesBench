@@ -670,6 +670,9 @@ class OpenAIResponsesProvider:
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         parallel_tool_calls: bool | None = None,
+        max_retries: int = 2,
+        retry_backoff_s: float = 1.0,
+        timeout_s: int = 300,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -680,6 +683,9 @@ class OpenAIResponsesProvider:
         self.parallel_tool_calls = (
             bool(parallel_tool_calls) if parallel_tool_calls is not None else None
         )
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff_s = float(retry_backoff_s)
+        self.timeout_s = int(timeout_s)
 
     def next_tool_calls(
         self,
@@ -699,7 +705,7 @@ class OpenAIResponsesProvider:
                 error=_missing_openai_dependency_message(exc),
             )
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=self.timeout_s)
         tools = _tool_schemas_to_openai_responses(tool_schemas)
         if state_image:
             return ProviderResult(
@@ -726,7 +732,16 @@ class OpenAIResponsesProvider:
         if self.max_output_tokens is not None:
             kwargs["max_output_tokens"] = self.max_output_tokens
 
-        response = client.responses.create(**kwargs)
+        attempt = 0
+        while True:
+            try:
+                response = client.responses.create(**kwargs)
+                break
+            except Exception as exc:  # pragma: no cover
+                attempt += 1
+                if attempt > self.max_retries:
+                    return ProviderResult([], raw=None, error=f"Provider error: {exc}")
+                time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
         data = response.model_dump() if hasattr(response, "model_dump") else response
         usage = None
         if isinstance(data, dict):

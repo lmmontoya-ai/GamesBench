@@ -58,7 +58,11 @@ def build_provider(
     if args.provider == "openai":
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
         return OpenAIResponsesProvider(
-            model=model, parallel_tool_calls=parallel_tool_calls
+            model=model,
+            parallel_tool_calls=parallel_tool_calls,
+            max_retries=int(retries),
+            retry_backoff_s=float(backoff),
+            timeout_s=int(getattr(args, "timeout_s", 300)),
         )
     if args.provider == "codex":
         return CodexCLIProvider(
@@ -158,6 +162,23 @@ def resolve_optional_positive_int(
     if resolved < 1:
         raise SystemExit(f"{key} must be >= 1, got {resolved}")
     return resolved
+
+
+def resolve_max_tool_calls_per_turn(
+    arg_value: int | None,
+    config: dict[str, Any],
+    *,
+    default: int = 1,
+) -> int:
+    if arg_value is not None:
+        value = int(arg_value)
+    elif "max_actions_per_turn" in config:
+        value = int(config["max_actions_per_turn"])
+    else:
+        value = int(config.get("max_tool_calls_per_turn", default))
+    if value < 1:
+        raise SystemExit(f"max_tool_calls_per_turn must be >= 1, got {value}")
+    return value
 
 
 def resolve_parallel_settings(

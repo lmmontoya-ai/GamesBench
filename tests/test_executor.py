@@ -26,6 +26,57 @@ def _output_for(job: _Job) -> dict[str, object]:
 
 
 class TestExecutor(unittest.TestCase):
+    def test_rejects_non_integer_job_episode_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            jobs = [_Job(True)]  # type: ignore[arg-type]
+            with self.assertRaises(SystemExit) as ctx:
+                run_episode_jobs(
+                    out_dir=out_dir,
+                    run_id="run",
+                    jobs=jobs,
+                    run_job=_output_for,
+                    parallelism=1,
+                    record=False,
+                    record_raw=False,
+                    progress_reporter=None,
+                    resume=False,
+                    strict_resume=False,
+                    checkpoint_interval=1,
+                )
+            self.assertIn("missing integer 'episode_id'", str(ctx.exception))
+
+    def test_rejects_non_integer_output_episode_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            jobs = [_Job(0)]
+
+            def bad_output(_job: _Job) -> dict[str, object]:
+                return {
+                    "episode_id": 1.5,
+                    "variant_id": "v",
+                    "episode": {"episode_id": 1.5, "variant_id": "v"},
+                    "events": [],
+                    "raw_lines": [],
+                    "recording": None,
+                }
+
+            with self.assertRaises(SystemExit) as ctx:
+                run_episode_jobs(
+                    out_dir=out_dir,
+                    run_id="run",
+                    jobs=jobs,
+                    run_job=bad_output,
+                    parallelism=1,
+                    record=False,
+                    record_raw=False,
+                    progress_reporter=None,
+                    resume=False,
+                    strict_resume=False,
+                    checkpoint_interval=1,
+                )
+            self.assertIn("missing integer 'episode_id'", str(ctx.exception))
+
     def test_parallel_non_contiguous_episode_ids_are_committed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)

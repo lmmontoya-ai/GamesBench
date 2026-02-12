@@ -493,6 +493,18 @@ class TestSokobanBatch(unittest.TestCase):
         self.assertEqual(merged["runs_per_level"], 2)
         self.assertEqual(merged["tool_variants"], ["move_only"])
 
+    def test_max_actions_per_turn_config_alias_is_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, state_format="text")
+            run_dir = sokoban_bench.run_batch(
+                args,
+                config={"max_actions_per_turn": 2},
+                game_name="sokoban",
+            )[0]
+            run_config = json.loads((Path(run_dir) / "run_config.json").read_text())
+            self.assertEqual(run_config["max_tool_calls_per_turn"], 2)
+            self.assertTrue(run_config["parallel_tool_calls"])
+
 
 if __name__ == "__main__":
     unittest.main()

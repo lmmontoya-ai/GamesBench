@@ -168,6 +168,67 @@ class TestRawGenerations(unittest.TestCase):
         self.assertEqual(row["actions"][1]["state_after_text"], "board-1")
         self.assertNotIn("tool_call", row)
 
+    def test_raw_generations_pairs_out_of_order_events_by_action_index(self) -> None:
+        events = [
+            {"type": "state_snapshot", "state": {"board": "s0"}, "turn_index": 0},
+            {"type": "state", "state_text": "s0", "turn_index": 0},
+            {"type": "provider_result", "error": None, "turn_index": 0},
+            {
+                "type": "tool_result",
+                "result": {"ok": True, "state": {"board": "s2"}},
+                "turn_index": 0,
+                "action_index": 1,
+            },
+            {
+                "type": "tool_call",
+                "name": "sokoban_move",
+                "arguments": {"direction": "up"},
+                "turn_index": 0,
+                "action_index": 0,
+            },
+            {
+                "type": "tool_result",
+                "result": {"ok": True, "state": {"board": "s1"}},
+                "turn_index": 0,
+                "action_index": 0,
+            },
+            {
+                "type": "tool_call",
+                "name": "sokoban_get_state",
+                "arguments": {},
+                "turn_index": 0,
+                "action_index": 1,
+            },
+            {
+                "type": "action_state",
+                "state": {"board": "s2"},
+                "state_text": "s2",
+                "turn_index": 0,
+                "action_index": 1,
+            },
+        ]
+        lines = sokoban_bench._raw_lines_for_events(
+            events=events,
+            episode_id=4,
+            variant_id="out-of-order",
+            instructions="Solve",
+            tool_schemas_payload=[
+                {"name": "sokoban_move"},
+                {"name": "sokoban_get_state"},
+            ],
+            state_format="text",
+            image_config={},
+        )
+        self.assertEqual(len(lines), 1)
+        row = json.loads(lines[0])
+        self.assertEqual(len(row["actions"]), 2)
+        self.assertEqual(row["actions"][0]["tool_call"]["name"], "sokoban_move")
+        self.assertEqual(row["actions"][0]["tool_result"]["state"]["board"], "s1")
+        self.assertEqual(row["actions"][1]["tool_call"]["name"], "sokoban_get_state")
+        self.assertEqual(row["actions"][1]["tool_result"]["state"]["board"], "s2")
+        self.assertEqual(row["actions"][1]["state_after_text"], "s2")
+        self.assertNotIn("incomplete", row)
+
     def test_single_action_row_keeps_legacy_tool_fields(self) -> None:
         events = [
             {

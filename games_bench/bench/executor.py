@@ -21,11 +21,13 @@ from games_bench.bench.checkpoint import (
 
 def _safe_int(value: Any) -> int | None:
     if isinstance(value, bool):
-        return int(value)
+        return None
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        return int(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if token and token.lstrip("-").isdigit():
+            return int(token)
     return None
 
 
