@@ -21,3 +21,15 @@ artifacts/
 apps/**/node_modules/
 apps/**/dist/
 apps/**/.vite/
+
+# User-requested removals (non-game docs)
+/AGENTS.md
+/BENCH_MATURITY_PLAN.md
+/CLAUDE.md
+/README.md
+/REVIEW.md
+/REVIEW_EVAL_ECOSYSTEM.md
+/architecture.md
+/development_design.md
+/easy_spec_guideline.md
+/standard_spec_guidelines.md
