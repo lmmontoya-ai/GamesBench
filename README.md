@@ -169,11 +169,6 @@ Adding a new game to GamesBench is straightforward and doesn't require modifying
 3. **Register:** Register the environment in `games_bench/games/registry.py`.
 4. **Create Batch Runner:** Add `games_bench/bench/<my_game>.py` with logic for running batches and default configs. Register it in `games_bench/bench/registry.py`.
 
-For strict guidelines on layer boundaries and repository expectations, see:
-- [AGENTS.md](AGENTS.md)
-- [CLAUDE.md](CLAUDE.md)
-- [Architecture Details](architecture.md)
-
 ---
 
 ## 📁 Repository Layout
