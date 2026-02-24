@@ -40,6 +40,19 @@ class TestFailureTaxonomy(unittest.TestCase):
         self.assertIn("query_loop", tags)
         self.assertIn("unsolved_final", tags)
 
+    def test_loop_patience_stop_classification(self) -> None:
+        outcome, tags = classify_episode(
+            {
+                "solved": False,
+                "termination_reason": "loop:8",
+                "turn_count": 20,
+                "max_turns": 100,
+            }
+        )
+        self.assertEqual(outcome, "failed_loop")
+        self.assertIn("loop_stop", tags)
+        self.assertIn("unsolved_final", tags)
+
     def test_sokoban_deadlock_tags(self) -> None:
         episode = annotate_episode_with_taxonomy(
             {

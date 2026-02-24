@@ -176,6 +176,7 @@ def default_sokoban_config() -> dict[str, Any]:
         "parallelism": 1,
         "max_inflight_provider": None,
         "stagnation_patience": None,
+        "loop_patience": None,
         "max_tool_calls_per_turn": 1,
         "deadlock_patience": 8,
         "prompt_variants": ["minimal"],
@@ -203,6 +204,31 @@ def default_sokoban_config() -> dict[str, Any]:
     }
 
 
+def _with_action_budget_instructions(
+    instructions: str, *, max_tool_calls_per_turn: int
+) -> str:
+    budget = int(max_tool_calls_per_turn)
+    if budget < 1:
+        raise ValueError(
+            f"max_tool_calls_per_turn must be >= 1, got {max_tool_calls_per_turn}"
+        )
+    if "Action budget per turn:" in instructions:
+        return instructions
+    if budget == 1:
+        suffix = (
+            "Action budget per turn:\n"
+            "- You can execute at most 1 tool call this turn.\n"
+            "- Choose exactly one move/query, then wait for the next state."
+        )
+    else:
+        suffix = (
+            "Action budget per turn:\n"
+            f"- You can execute up to {budget} tool calls in this turn.\n"
+            "- If you chain actions, keep the sequence short and state-consistent."
+        )
+    return f"{instructions}\n\n{suffix}"
+
+
 def build_sokoban_adapter(env: SokobanEnv, **kwargs: Any) -> SokobanGameAdapter:
     return SokobanGameAdapter(env, **kwargs)
 
@@ -219,6 +245,7 @@ def _build_provider(
     provider_backoff: float | None = None,
     stream_debug: bool | None = None,
     parallel_tool_calls: bool | None = None,
+    max_tool_calls_per_turn: int | None = None,
 ) -> Any:
     return _shared_build_provider(
         args,
@@ -227,6 +254,7 @@ def _build_provider(
         provider_backoff=provider_backoff,
         stream_debug=stream_debug,
         parallel_tool_calls=parallel_tool_calls,
+        max_tool_calls_per_turn=max_tool_calls_per_turn,
     )
 
 
@@ -1149,6 +1177,7 @@ def _run_sokoban_episode_job(
     record_raw: bool,
     record: bool,
     stagnation_patience: int | None,
+    loop_patience: int | None,
     deadlock_patience: int | None,
     max_tool_calls_per_turn: int,
 ) -> SokobanEpisodeOutput:
@@ -1163,6 +1192,10 @@ def _run_sokoban_episode_job(
     instructions = job.prompt_variant.instructions
     if state_format in {"image", "both"}:
         instructions = with_image_instructions(instructions)
+    instructions = _with_action_budget_instructions(
+        instructions,
+        max_tool_calls_per_turn=max_tool_calls_per_turn,
+    )
 
     state_formatter = lambda a, pv=job.prompt_variant: a.env.format_prompt_state(
         include_legal_moves=pv.include_legal_moves,
@@ -1206,6 +1239,7 @@ def _run_sokoban_episode_job(
         allowed_tools=job.tool_variant.allowed_tools,
         record_provider_raw=record_provider_raw,
         stagnation_patience=stagnation_patience,
+        loop_patience=loop_patience,
         deadlock_patience=deadlock_patience,
         deadlock_checker=deadlock_checker,
         deadlock_terminate_on_check=job.effective_terminal_on_deadlock,
@@ -1548,6 +1582,11 @@ def run_batch(
         config,
         "stagnation_patience",
     )
+    loop_patience = _resolve_optional_positive_int(
+        getattr(args, "loop_patience", None),
+        config,
+        "loop_patience",
+    )
     max_tool_calls_per_turn = _shared_resolve_max_tool_calls_per_turn(
         getattr(args, "max_tool_calls_per_turn", None),
         config,
@@ -1765,6 +1804,7 @@ def run_batch(
                     provider_backoff=provider_backoff,
                     stream_debug=stream_debug,
                     parallel_tool_calls=bool(max_tool_calls_per_turn > 1),
+                    max_tool_calls_per_turn=max_tool_calls_per_turn,
                 )
                 provider = _ThrottledProvider(base_provider, provider_semaphore)
                 provider_local.provider = provider
@@ -1869,6 +1909,7 @@ def run_batch(
                 "parallelism": parallelism,
                 "max_inflight_provider": max_inflight_provider,
                 "stagnation_patience": stagnation_patience,
+                "loop_patience": loop_patience,
                 "max_tool_calls_per_turn": max_tool_calls_per_turn,
                 "parallel_tool_calls": bool(max_tool_calls_per_turn > 1),
                 "deadlock_patience": deadlock_patience,
@@ -1961,6 +2002,7 @@ def run_batch(
                 record_raw=record_raw,
                 record=record,
                 stagnation_patience=stagnation_patience,
+                loop_patience=loop_patience,
                 deadlock_patience=deadlock_patience,
                 max_tool_calls_per_turn=max_tool_calls_per_turn,
             )

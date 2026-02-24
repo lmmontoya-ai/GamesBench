@@ -11,7 +11,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+
+from .codex_app_server import CodexAppServerError, CodexAppServerSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +277,7 @@ class OpenRouterProvider:
         stream_debug: bool = False,
         timeout_s: int = 300,
         parallel_tool_calls: bool | None = None,
+        provider_sort: str | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -290,6 +293,10 @@ class OpenRouterProvider:
         self.timeout_s = int(timeout_s)
         self.parallel_tool_calls = (
             bool(parallel_tool_calls) if parallel_tool_calls is not None else None
+        )
+        raw_provider_sort = provider_sort or os.environ.get("OPENROUTER_PROVIDER_SORT")
+        self.provider_sort = (
+            str(raw_provider_sort).strip() if raw_provider_sort is not None else ""
         )
 
     def _stream_log(self, message: str) -> None:
@@ -340,6 +347,16 @@ class OpenRouterProvider:
         self, client: Any, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         stream_kwargs = dict(kwargs)
+        # OpenAI SDK forwards OpenRouter-specific fields via extra_body.
+        provider_routing = stream_kwargs.pop("provider", None)
+        if provider_routing is not None:
+            extra_body = stream_kwargs.get("extra_body")
+            if isinstance(extra_body, dict):
+                merged_extra_body = dict(extra_body)
+            else:
+                merged_extra_body = {}
+            merged_extra_body["provider"] = provider_routing
+            stream_kwargs["extra_body"] = merged_extra_body
         stream_kwargs["stream"] = True
         stream_kwargs["stream_options"] = {"include_usage": True}
 
@@ -546,6 +563,8 @@ class OpenRouterProvider:
             "tools": tools,
             "tool_choice": "required",
         }
+        if self.provider_sort:
+            kwargs["provider"] = {"sort": self.provider_sort}
         if self.parallel_tool_calls is not None:
             kwargs["parallel_tool_calls"] = self.parallel_tool_calls
         if self.temperature is not None:
@@ -856,8 +875,256 @@ class CLIProvider:
         )
 
 
+def _codex_emit_tool_schema() -> dict[str, Any]:
+    return {
+        "name": "emit_tool_call",
+        "description": (
+            "Emit exactly one benchmark tool call. "
+            "Set name to the game tool name and arguments to its JSON object."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string"},
+                "arguments": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["name", "arguments"],
+        },
+    }
+
+
+def _codex_tool_result(success: bool, text: str) -> dict[str, Any]:
+    return {
+        "success": bool(success),
+        "contentItems": [{"type": "inputText", "text": str(text)}],
+    }
+
+
+def _normalize_codex_token_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not usage:
+        return None
+    if any(key in usage for key in ("prompt_tokens", "input_tokens", "total_tokens")):
+        return usage
+    last = usage.get("last")
+    if not isinstance(last, dict):
+        return usage
+    mapped: dict[str, Any] = {}
+    input_tokens = last.get("inputTokens")
+    output_tokens = last.get("outputTokens")
+    total_tokens = last.get("totalTokens")
+    reasoning_tokens = last.get("reasoningOutputTokens")
+    if isinstance(input_tokens, (int, float)):
+        mapped["input_tokens"] = float(input_tokens)
+        mapped["prompt_tokens"] = float(input_tokens)
+    if isinstance(output_tokens, (int, float)):
+        mapped["output_tokens"] = float(output_tokens)
+        mapped["completion_tokens"] = float(output_tokens)
+    if isinstance(total_tokens, (int, float)):
+        mapped["total_tokens"] = float(total_tokens)
+    if isinstance(reasoning_tokens, (int, float)):
+        mapped["reasoning_output_tokens"] = float(reasoning_tokens)
+    return mapped or usage
+
+
+class CodexAppServerProvider:
+    """Codex provider backed by `codex app-server` dynamic tools."""
+
+    supports_images = False
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        codex_path: str = "codex",
+        app_args: Iterable[str] | None = None,
+        timeout_s: int = 300,
+        max_tool_calls_per_turn: int = 1,
+        session_factory: Callable[[], CodexAppServerSession] | None = None,
+    ) -> None:
+        self.model = model
+        self.codex_path = codex_path
+        self.app_args = list(app_args or [])
+        self.timeout_s = int(timeout_s)
+        self.max_tool_calls_per_turn = max(1, int(max_tool_calls_per_turn))
+        self._session_factory = session_factory
+        self._session: CodexAppServerSession | None = None
+
+    def _get_session(self) -> CodexAppServerSession:
+        if self._session is None:
+            if self._session_factory is not None:
+                self._session = self._session_factory()
+            else:
+                self._session = CodexAppServerSession(
+                    codex_path=self.codex_path,
+                    app_args=self.app_args,
+                    timeout_s=self.timeout_s,
+                )
+        return self._session
+
+    def _resolved_model(self) -> str | None:
+        raw = str(self.model or "").strip()
+        if not raw or raw == "default":
+            return None
+        return raw
+
+    def next_tool_calls(
+        self,
+        *,
+        state_text: str,
+        tool_schemas: list[dict[str, Any]],
+        instructions: str,
+        state_image: dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
+    ) -> ProviderResult:
+        if state_image:
+            return ProviderResult(
+                [],
+                raw=None,
+                error="Image inputs are not supported by CodexAppServerProvider.",
+            )
+        allowed_tools = {
+            str(schema.get("name"))
+            for schema in tool_schemas
+            if isinstance(schema, dict) and schema.get("name")
+        }
+        if not allowed_tools:
+            return ProviderResult([], raw=None, error="No tool schemas available.")
+
+        if conversation is not None:
+            state_block = _conversation_to_text(conversation)
+            prompt = (
+                "Conversation history:\n"
+                f"{state_block}\n\n"
+                "AVAILABLE GAME TOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "You must use the dynamic tool `emit_tool_call` for every action.\n"
+                f"Action budget for this turn: up to {self.max_tool_calls_per_turn} calls.\n"
+                "For each action call emit_tool_call with:\n"
+                "- name: exact game tool name from AVAILABLE GAME TOOLS\n"
+                "- arguments: JSON object arguments for that tool\n"
+                "Do not invent tool names."
+            )
+        else:
+            prompt = (
+                f"{instructions}\n\nSTATE:\n{state_text}\n\n"
+                "AVAILABLE GAME TOOLS:\n"
+                f"{json.dumps(tool_schemas, indent=2)}\n\n"
+                "Use the dynamic tool `emit_tool_call` for actions.\n"
+                f"Action budget for this turn: up to {self.max_tool_calls_per_turn} calls.\n"
+                "Each emit_tool_call must provide:\n"
+                "- name: exact game tool name\n"
+                "- arguments: JSON object"
+            )
+
+        captured_calls: list[ToolCall] = []
+        tool_errors: list[str] = []
+
+        def on_tool_call(params: dict[str, Any]) -> dict[str, Any]:
+            tool_name = str(params.get("tool") or "")
+            if tool_name != "emit_tool_call":
+                msg = f"Unsupported dynamic tool: {tool_name or '<empty>'}"
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+
+            payload = params.get("arguments")
+            if not isinstance(payload, dict):
+                msg = "emit_tool_call arguments must be an object."
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+
+            raw_name = payload.get("name")
+            raw_arguments = payload.get("arguments")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                msg = "emit_tool_call.name must be a non-empty string."
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+            name = raw_name.strip()
+            if name not in allowed_tools:
+                msg = f"Tool not allowed in this benchmark turn: {name}"
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+            if not isinstance(raw_arguments, dict):
+                msg = f"emit_tool_call.arguments for {name} must be an object."
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+            if len(captured_calls) >= self.max_tool_calls_per_turn:
+                msg = (
+                    f"Tool-call budget exceeded ({self.max_tool_calls_per_turn}); "
+                    f"ignoring additional call for {name}."
+                )
+                tool_errors.append(msg)
+                return _codex_tool_result(False, msg)
+
+            captured_calls.append(ToolCall(name=name, arguments=raw_arguments))
+            return _codex_tool_result(True, f"Accepted tool call for {name}.")
+
+        try:
+            turn_result = self._get_session().run_turn(
+                model=self._resolved_model(),
+                input_text=prompt,
+                dynamic_tools=[_codex_emit_tool_schema()],
+                on_tool_call=on_tool_call,
+                timeout_s=self.timeout_s,
+            )
+        except CodexAppServerError as exc:
+            return ProviderResult([], raw=None, error=f"Codex app-server error: {exc}")
+        except Exception as exc:  # pragma: no cover
+            return ProviderResult([], raw=None, error=f"Codex provider error: {exc}")
+
+        raw_usage = _normalize_usage(turn_result.usage or turn_result.thread_usage)
+        usage = _normalize_codex_token_usage(raw_usage)
+        cost = _extract_cost(usage, turn_result.completion)
+        raw = {
+            "thread_id": turn_result.thread_id,
+            "turn_id": turn_result.turn_id,
+            "status": turn_result.status,
+            "completion": turn_result.completion,
+            "raw_usage": raw_usage,
+            "notifications": turn_result.notifications,
+            "server_requests": turn_result.server_requests,
+            "tool_errors": tool_errors,
+        }
+        if turn_result.status not in {"completed", "success"}:
+            return ProviderResult(
+                [],
+                raw=raw,
+                error=f"Codex turn did not complete successfully: {turn_result.status}",
+                usage=usage,
+                cost=cost,
+            )
+        if captured_calls:
+            return ProviderResult(captured_calls, raw=raw, usage=usage, cost=cost)
+        if tool_errors:
+            return ProviderResult(
+                [],
+                raw=raw,
+                error=f"No valid tool calls emitted. Last error: {tool_errors[-1]}",
+                usage=usage,
+                cost=cost,
+            )
+        return ProviderResult(
+            [],
+            raw=raw,
+            error="No tool calls returned by Codex app-server turn.",
+            usage=usage,
+            cost=cost,
+        )
+
+    def close(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def __del__(self) -> None:  # pragma: no cover
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 class CodexCLIProvider:
-    """Codex CLI provider using --output-last-message and --output-schema."""
+    """Legacy Codex CLI provider using `codex exec` output schema."""
 
     supports_images = False
 
@@ -880,7 +1147,9 @@ class CodexCLIProvider:
                     "additionalProperties": False,
                     "properties": {
                         "name": {"type": "string"},
-                        "arguments": {"type": "object"},
+                        # Codex output schemas require strict object constraints.
+                        # Keep arguments as JSON string for open-ended tool payloads.
+                        "arguments": {"type": "string"},
                     },
                     "required": ["name", "arguments"],
                 },
@@ -908,15 +1177,15 @@ class CodexCLIProvider:
                 "Conversation history:\n"
                 f"{_conversation_to_text(conversation)}\n\nTOOLS:\n"
                 f"{json.dumps(tool_schemas, indent=2)}\n\n"
-                "Return a single tool call as JSON: "
-                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+                "Return a single tool call as JSON where arguments is a JSON string: "
+                '{"name": "...", "arguments": "{\\"from_peg\\":0,\\"to_peg\\":2}"}'
             )
         else:
             prompt = (
                 f"{instructions}\n\nSTATE:\n{state_text}\n\nTOOLS:\n"
                 f"{json.dumps(tool_schemas, indent=2)}\n\n"
-                "Return a single tool call as JSON: "
-                '{"name": "...", "arguments": {"from_peg": 0, "to_peg": 2}}'
+                "Return a single tool call as JSON where arguments is a JSON string: "
+                '{"name": "...", "arguments": "{\\"from_peg\\":0,\\"to_peg\\":2}"}'
             )
         out_path = Path(self._tmpdir.name) / "last_message.json"
         if out_path.exists():

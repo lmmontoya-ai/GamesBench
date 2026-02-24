@@ -5,7 +5,7 @@ import sys
 from typing import Any
 
 
-PROVIDER_CHOICES = ["openrouter", "openai", "codex", "cli"]
+PROVIDER_CHOICES = ["openrouter", "openai", "codex", "codex-exec", "cli"]
 
 
 def add_common_batch_arguments(
@@ -18,7 +18,7 @@ def add_common_batch_arguments(
         choices=PROVIDER_CHOICES,
         help="Which provider to use.",
     )
-    parser.add_argument("--model", help="Model name for OpenAI/OpenRouter.")
+    parser.add_argument("--model", help="Model name for OpenAI/OpenRouter/Codex.")
     parser.add_argument(
         "--config", help="Path to JSON config (models + optional defaults)."
     )
@@ -93,6 +93,15 @@ def add_common_batch_arguments(
         help=(
             "Early-stop an episode after N consecutive turns with unchanged state. "
             "Disabled when unset."
+        ),
+    )
+    parser.add_argument(
+        "--loop-patience",
+        type=int,
+        default=None,
+        help=(
+            "Early-stop an episode after N repeated state->action->state "
+            "transitions. Disabled when unset."
         ),
     )
     parser.add_argument(
@@ -171,7 +180,14 @@ def add_common_batch_arguments(
         action="append",
         dest="codex_args",
         default=[],
-        help="Extra args to pass to codex exec (repeatable).",
+        help="Extra args to pass to legacy codex exec (provider=codex-exec).",
+    )
+    parser.add_argument(
+        "--codex-app-arg",
+        action="append",
+        dest="codex_app_args",
+        default=[],
+        help="Extra args to pass to codex app-server (provider=codex).",
     )
     parser.add_argument(
         "--record-provider-raw",

@@ -169,6 +169,52 @@ class TestCheckpointResume(unittest.TestCase):
                 hanoi_bench.run_batch(args, config={}, game_name="hanoi")
             self.assertIn("job plan mismatch", str(ctx.exception).lower())
 
+    def test_strict_resume_rejects_checkpoint_ahead_of_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, run_id="resume-checkpoint-ahead-strict")
+            run_dirs = hanoi_bench.run_batch(args, config={}, game_name="hanoi")
+            self.assertEqual(len(run_dirs), 1)
+
+            run_dir = Path(tmp) / "hanoi" / "cli" / "default" / args.run_id
+            episodes_path = run_dir / "episodes.jsonl"
+            lines = episodes_path.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            episodes_path.write_text(lines[0] + "\n")
+
+            args.resume = True
+            args.strict_resume = True
+            with self.assertRaises(SystemExit) as ctx:
+                hanoi_bench.run_batch(args, config={}, game_name="hanoi")
+            self.assertIn("missing from episodes.jsonl", str(ctx.exception))
+
+    def test_non_strict_resume_rewinds_checkpoint_ahead_of_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _base_args(out_dir=tmp, run_id="resume-checkpoint-ahead")
+            run_dirs = hanoi_bench.run_batch(args, config={}, game_name="hanoi")
+            self.assertEqual(len(run_dirs), 1)
+
+            run_dir = Path(tmp) / "hanoi" / "cli" / "default" / args.run_id
+            episodes_path = run_dir / "episodes.jsonl"
+            traces_path = run_dir / "traces.jsonl"
+            lines = episodes_path.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            episodes_path.write_text(lines[0] + "\n")
+            trace_lines = traces_path.read_text().splitlines()
+            traces_path.write_text(trace_lines[0] + "\n")
+
+            args.resume = True
+            args.strict_resume = False
+            run_dirs = hanoi_bench.run_batch(args, config={}, game_name="hanoi")
+            self.assertEqual(len(run_dirs), 1)
+
+            resumed_lines = episodes_path.read_text().splitlines()
+            self.assertEqual(len(resumed_lines), 2)
+            resumed_ids = [json.loads(line)["episode_id"] for line in resumed_lines]
+            self.assertEqual(resumed_ids, [0, 1])
+
+            state = json.loads((run_dir / "execution_state.json").read_text())
+            self.assertEqual(state["completed_episode_ids"], [0, 1])
+
     def test_resume_requires_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = _base_args(out_dir=tmp, run_id=None)

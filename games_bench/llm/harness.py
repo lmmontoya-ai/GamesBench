@@ -126,6 +126,23 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _transition_signature(
+    *,
+    state_before: Any,
+    tool_name: str,
+    tool_arguments: dict[str, Any],
+    state_after: Any,
+) -> str:
+    return _compact_json(
+        {
+            "state_before": state_before,
+            "tool_name": tool_name,
+            "tool_arguments": tool_arguments,
+            "state_after": state_after,
+        }
+    )
+
+
 def run_tool_calling_episode(
     adapter: GameAdapter,
     provider: Any,
@@ -139,6 +156,7 @@ def run_tool_calling_episode(
     record_provider_raw: bool = False,
     stagnation_patience: int | None = None,
     deadlock_patience: int | None = None,
+    loop_patience: int | None = None,
     deadlock_checker: Callable[[GameAdapter], bool] | None = None,
     deadlock_terminate_on_check: bool | None = None,
     stateless: bool = False,
@@ -162,6 +180,8 @@ def run_tool_calling_episode(
         raise ValueError("stagnation_patience must be >= 1 when provided.")
     if deadlock_patience is not None and int(deadlock_patience) < 1:
         raise ValueError("deadlock_patience must be >= 1 when provided.")
+    if loop_patience is not None and int(loop_patience) < 1:
+        raise ValueError("loop_patience must be >= 1 when provided.")
     if int(max_tool_calls_per_turn) < 1:
         raise ValueError("max_tool_calls_per_turn must be >= 1.")
     deadlock_checker = deadlock_checker or _infer_deadlock_checker(adapter)
@@ -180,6 +200,8 @@ def run_tool_calling_episode(
     last_snapshot: str | None = None
     stagnation_turns = 0
     deadlock_turns = 0
+    loop_repeats = 0
+    seen_transitions: set[str] = set()
     terminated_early = False
     termination_reason: str | None = None
     conversation: list[dict[str, Any]] | None = None
@@ -246,6 +268,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "loop_repeats": loop_repeats,
                     "turn_index": turn_index,
                 }
             )
@@ -261,6 +284,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "loop_repeats": loop_repeats,
                     "turn_index": turn_index,
                 }
             )
@@ -274,6 +298,7 @@ def run_tool_calling_episode(
                     "reason": termination_reason,
                     "stagnation_turns": stagnation_turns,
                     "deadlock_turns": deadlock_turns,
+                    "loop_repeats": loop_repeats,
                     "turn_index": turn_index,
                 }
             )
@@ -337,6 +362,7 @@ def run_tool_calling_episode(
 
         stop_turn = False
         for action_index, call in enumerate(executed_calls):
+            action_state_before = adapter.get_state_snapshot()
             if conversation is not None:
                 conversation.append(
                     {
@@ -402,6 +428,17 @@ def run_tool_calling_episode(
                     "action_index": action_index,
                 }
             )
+            transition_signature = _transition_signature(
+                state_before=action_state_before,
+                tool_name=call.name,
+                tool_arguments=call.arguments,
+                state_after=action_state_snapshot,
+            )
+            if transition_signature in seen_transitions:
+                loop_repeats += 1
+            else:
+                seen_transitions.add(transition_signature)
+                loop_repeats = 0
             if state_image_renderer is not None:
                 action_state_image = state_image_renderer(adapter)
                 action_state_image_meta = _state_image_meta(action_state_image)
@@ -424,6 +461,22 @@ def run_tool_calling_episode(
                         ),
                     }
                 )
+            if loop_patience is not None and loop_repeats >= int(loop_patience):
+                terminated_early = True
+                termination_reason = f"loop:{loop_repeats}"
+                events.append(
+                    {
+                        "type": "early_stop",
+                        "reason": termination_reason,
+                        "stagnation_turns": stagnation_turns,
+                        "deadlock_turns": deadlock_turns,
+                        "loop_repeats": loop_repeats,
+                        "turn_index": turn_index,
+                        "action_index": action_index,
+                    }
+                )
+                stop_turn = True
+                break
             if bool(tool_meta.get("terminate_episode")):
                 terminated_early = True
                 termination_reason = str(
@@ -435,6 +488,7 @@ def run_tool_calling_episode(
                         "reason": termination_reason,
                         "stagnation_turns": stagnation_turns,
                         "deadlock_turns": deadlock_turns,
+                        "loop_repeats": loop_repeats,
                         "turn_index": turn_index,
                         "action_index": action_index,
                     }

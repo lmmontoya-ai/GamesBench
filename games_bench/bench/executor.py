@@ -215,9 +215,25 @@ def run_episode_jobs(
                 raise SystemExit(
                     "Resume run_id mismatch with checkpoint. Use matching --run-id or disable --strict-resume."
                 )
-            merged_completed = set(
+            checkpoint_completed = set(
                 int(x) for x in state.get("completed_episode_ids", [])
             )
+            checkpoint_only_ids = sorted(checkpoint_completed - completed_ids)
+            if checkpoint_only_ids:
+                if strict_resume:
+                    preview = ", ".join(str(x) for x in checkpoint_only_ids[:10])
+                    if len(checkpoint_only_ids) > 10:
+                        preview += ", ..."
+                    raise SystemExit(
+                        "Strict resume mismatch: execution_state.json references "
+                        f"episode_id(s) missing from episodes.jsonl ({preview}). "
+                        "This can happen if a run was interrupted before JSONL "
+                        "buffers flushed. Re-run with --resume (non-strict) to "
+                        "rewind to durable episodes and recompute missing outputs."
+                    )
+                merged_completed = set(completed_ids)
+            else:
+                merged_completed = set(checkpoint_completed)
             merged_completed |= completed_ids
             state = build_execution_state(
                 run_id=run_id,
@@ -266,6 +282,15 @@ def run_episode_jobs(
     ):
         commits_since_checkpoint = 0
 
+        def flush_artifacts_for_checkpoint() -> None:
+            ep_file.flush()
+            trace_file.flush()
+            os.fsync(ep_file.fileno())
+            os.fsync(trace_file.fileno())
+            if record_raw:
+                raw_file.flush()
+                os.fsync(raw_file.fileno())
+
         def commit_output(output: Any) -> None:
             nonlocal state, commits_since_checkpoint
 
@@ -309,6 +334,7 @@ def run_episode_jobs(
             state = update_execution_state(state, committed_episode_id=episode_id)
             commits_since_checkpoint += 1
             if commits_since_checkpoint >= checkpoint_interval:
+                flush_artifacts_for_checkpoint()
                 save_execution_state(state_file, state)
                 commits_since_checkpoint = 0
 
@@ -361,6 +387,7 @@ def run_episode_jobs(
                     )
 
         if commits_since_checkpoint > 0:
+            flush_artifacts_for_checkpoint()
             save_execution_state(state_file, state)
 
     return sorted(episodes, key=lambda ep: int(ep.get("episode_id", 0)))

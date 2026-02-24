@@ -78,13 +78,52 @@ class TestRegistry(unittest.TestCase):
         load_builtin_suites()
         self.assertIn("easy-v1", list_suites())
         self.assertIn("standard-v1", list_suites())
-        for name in ("easy-v1", "standard-v1"):
+        self.assertIn("agentic-v1", list_suites())
+        for name in ("easy-v1", "standard-v1", "agentic-v1"):
             suite = get_suite(name)
             self.assertEqual(suite.name, name)
             config_a = suite.config_factory()
             config_b = suite.config_factory()
             self.assertEqual(config_a, config_b)
             self.assertIsNot(config_a, config_b)
+
+    def test_builtin_sokoban_suites_have_valid_prompt_tool_combinations(self) -> None:
+        from games_bench.bench.sokoban import (
+            DEFAULT_PROMPT_VARIANTS,
+            DEFAULT_TOOL_VARIANTS,
+        )
+
+        load_builtin_suites()
+        for suite_name in ("easy-v1", "standard-v1", "agentic-v1"):
+            suite = get_suite(suite_name)
+            config = suite.config_factory()
+            games = config.get("games", {})
+            self.assertIsInstance(games, dict)
+            sokoban_config = games.get("sokoban", {})
+            self.assertIsInstance(sokoban_config, dict)
+            prompt_variants = sokoban_config.get("prompt_variants", [])
+            tool_variants = sokoban_config.get("tool_variants", [])
+            self.assertIsInstance(prompt_variants, list)
+            self.assertIsInstance(tool_variants, list)
+
+            for prompt_name in prompt_variants:
+                self.assertIn(prompt_name, DEFAULT_PROMPT_VARIANTS)
+                prompt_variant = DEFAULT_PROMPT_VARIANTS[str(prompt_name)]
+                for tool_name in tool_variants:
+                    self.assertIn(tool_name, DEFAULT_TOOL_VARIANTS)
+                    tool_variant = DEFAULT_TOOL_VARIANTS[str(tool_name)]
+                    if (
+                        prompt_variant.include_legal_moves
+                        and tool_variant.allowed_tools is not None
+                    ):
+                        self.assertIn(
+                            "sokoban_get_legal_moves",
+                            set(tool_variant.allowed_tools),
+                            msg=(
+                                f"Suite '{suite_name}' has invalid combo: "
+                                f"prompt='{prompt_name}', tools='{tool_name}'"
+                            ),
+                        )
 
     def test_builtin_benchmarks_load_when_registry_has_custom_entries(self) -> None:
         from games_bench.bench import registry as bench_registry_module
@@ -117,6 +156,7 @@ class TestRegistry(unittest.TestCase):
             self.assertIn("custom-suite", names)
             self.assertIn("easy-v1", names)
             self.assertIn("standard-v1", names)
+            self.assertIn("agentic-v1", names)
 
 
 if __name__ == "__main__":

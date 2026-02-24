@@ -7,6 +7,7 @@ from .harness import EpisodeResult, run_tool_calling_episode
 from .recording import build_recording
 from .providers import (
     CLIProvider,
+    CodexAppServerProvider,
     CodexCLIProvider,
     OpenAIResponsesProvider,
     OpenRouterProvider,
@@ -15,6 +16,7 @@ from .providers import (
 
 __all__ = [
     "CLIProvider",
+    "CodexAppServerProvider",
     "CodexCLIProvider",
     "EpisodeResult",
     "GameAdapter",

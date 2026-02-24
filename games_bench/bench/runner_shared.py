@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from games_bench.llm import (
     CLIProvider,
+    CodexAppServerProvider,
     CodexCLIProvider,
     OpenAIResponsesProvider,
     OpenRouterProvider,
@@ -28,6 +29,7 @@ def build_provider(
     provider_backoff: float | None = None,
     stream_debug: bool | None = None,
     parallel_tool_calls: bool | None = None,
+    max_tool_calls_per_turn: int | None = None,
 ) -> Any:
     retries = provider_retries
     if retries is None:
@@ -65,10 +67,18 @@ def build_provider(
             timeout_s=int(getattr(args, "timeout_s", 300)),
         )
     if args.provider == "codex":
+        return CodexAppServerProvider(
+            model=model,
+            codex_path=args.codex_path,
+            app_args=getattr(args, "codex_app_args", []),
+            timeout_s=int(getattr(args, "timeout_s", 300)),
+            max_tool_calls_per_turn=int(max_tool_calls_per_turn or 1),
+        )
+    if args.provider == "codex-exec":
         return CodexCLIProvider(
             codex_path=args.codex_path,
-            extra_args=args.codex_args,
-            timeout_s=args.timeout_s,
+            extra_args=getattr(args, "codex_args", []),
+            timeout_s=int(getattr(args, "timeout_s", 300)),
         )
     if args.provider == "cli":
         if not args.cli_cmd:
@@ -101,6 +111,8 @@ def resolve_models(
                 return [str(default_models)]
     if provider in {"openrouter", "openai"}:
         return [fallback] if fallback else []
+    if provider == "codex":
+        return [fallback or "default"]
     return [fallback or "default"]
 
 

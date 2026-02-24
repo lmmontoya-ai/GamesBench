@@ -222,6 +222,55 @@ class TestHarness(unittest.TestCase):
             any(event.get("type") == "early_stop" for event in result.events)
         )
 
+    def test_stops_early_on_repeated_transition_loop(self) -> None:
+        class LoopingAdapter(DummyAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self._position = 0
+
+            def execute_tool(
+                self, name: str, arguments: dict[str, Any]
+            ) -> ToolExecution:
+                self.executed.append(name)
+                if name == "dummy_move":
+                    self._moves += 1
+                    self._position = 1 - self._position
+                    return ToolExecution(
+                        result={"ok": True, "state": {"moves": self._moves}},
+                        meta={"state_mutating": True, "illegal_action": False},
+                    )
+                return super().execute_tool(name, arguments)
+
+            def get_state_snapshot(self) -> dict[str, Any]:
+                return {"position": self._position}
+
+            def episode_metrics(self) -> dict[str, Any]:
+                return {"move_count": self._moves, "position": self._position}
+
+        adapter = LoopingAdapter()
+        provider = MockProvider(
+            [
+                ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})
+                for _ in range(12)
+            ]
+        )
+        result = run_tool_calling_episode(
+            adapter,
+            provider,
+            max_turns=12,
+            loop_patience=2,
+        )
+        self.assertFalse(result.solved)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.termination_reason, "loop:2")
+        self.assertEqual(result.tool_calls, 4)
+        self.assertTrue(
+            any(
+                event.get("type") == "early_stop" and event.get("reason") == "loop:2"
+                for event in result.events
+            )
+        )
+
     def test_stops_early_on_deadlock_patience(self) -> None:
         adapter = DummyAdapter()
         provider = MockProvider(
@@ -399,6 +448,19 @@ class TestHarness(unittest.TestCase):
                 provider,
                 max_turns=1,
                 max_tool_calls_per_turn=0,
+            )
+
+    def test_rejects_invalid_loop_patience(self) -> None:
+        adapter = DummyAdapter()
+        provider = MockProvider(
+            [ProviderResult(tool_calls=[ToolCall("dummy_move", {})], raw={})]
+        )
+        with self.assertRaises(ValueError):
+            run_tool_calling_episode(
+                adapter,
+                provider,
+                max_turns=1,
+                loop_patience=0,
             )
 
     def test_usage_accumulation_does_not_double_count_overlapping_keys(self) -> None:

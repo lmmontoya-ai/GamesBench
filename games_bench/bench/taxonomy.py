@@ -39,6 +39,11 @@ def classify_episode(
         if not solved:
             outcome_code = "failed_stagnation"
 
+    if reason.startswith("loop:"):
+        tags.append("loop_stop")
+        if not solved:
+            outcome_code = "failed_loop"
+
     if reason == "deadlock_terminal" or reason.startswith("deadlock:"):
         tags.append("deadlock_terminal")
         if reason.startswith("deadlock:"):

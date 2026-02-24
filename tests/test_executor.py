@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 from games_bench.bench.executor import run_episode_jobs
 
@@ -156,6 +157,55 @@ class TestExecutor(unittest.TestCase):
             self.assertIn(
                 "episode_id mismatch for parallel execution", str(ctx.exception)
             )
+
+    def test_checkpoint_save_observes_flushed_jsonl_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            jobs = [_Job(0), _Job(1)]
+
+            from games_bench.bench import executor as executor_module
+
+            real_save_execution_state = executor_module.save_execution_state
+
+            def validating_save(path: Path, state: dict[str, object]) -> None:
+                completed_ids = state.get("completed_episode_ids", [])
+                completed_count = (
+                    len(completed_ids) if isinstance(completed_ids, list) else 0
+                )
+                episodes_path = out_dir / "episodes.jsonl"
+                traces_path = out_dir / "traces.jsonl"
+                if episodes_path.exists():
+                    episode_lines = len(episodes_path.read_text().splitlines())
+                else:
+                    episode_lines = 0
+                if traces_path.exists():
+                    trace_lines = len(traces_path.read_text().splitlines())
+                else:
+                    trace_lines = 0
+                if completed_count > episode_lines or completed_count > trace_lines:
+                    raise AssertionError("Checkpoint advanced past durable JSONL rows.")
+                real_save_execution_state(path, state)
+
+            with mock.patch.object(
+                executor_module,
+                "save_execution_state",
+                side_effect=validating_save,
+            ):
+                episodes = run_episode_jobs(
+                    out_dir=out_dir,
+                    run_id="run",
+                    jobs=jobs,
+                    run_job=_output_for,
+                    parallelism=1,
+                    record=False,
+                    record_raw=False,
+                    progress_reporter=None,
+                    resume=False,
+                    strict_resume=False,
+                    checkpoint_interval=1,
+                )
+
+            self.assertEqual([ep["episode_id"] for ep in episodes], [0, 1])
 
 
 if __name__ == "__main__":

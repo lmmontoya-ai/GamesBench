@@ -112,6 +112,19 @@ uv run games-bench run --provider openrouter --model anthropic/claude-3-haiku --
 uv run games-bench run --provider openrouter --model anthropic/claude-3-opus --suite standard-v1 --game hanoi
 ```
 
+### Codex provider (app-server default)
+
+`provider=codex` now uses `codex app-server` with dynamic tool calls (canonical path).
+Use `provider=codex-exec` only as a legacy fallback.
+
+```bash
+# Canonical Codex path (app-server)
+uv run games-bench run --provider codex --model gpt-5.3-codex --suite easy-v1
+
+# Legacy fallback path (codex exec)
+uv run games-bench run --provider codex-exec --suite easy-v1
+```
+
 ---
 
 ## 🛠️ Common Workflows

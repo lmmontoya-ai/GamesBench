@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from games_bench.bench import batch
 from games_bench.bench import cli as bench_cli
+from games_bench.bench import runner_shared
+from games_bench.llm.providers import CodexAppServerProvider, CodexCLIProvider
 
 
 class TestBatchCli(unittest.TestCase):
@@ -38,8 +40,51 @@ class TestBatchCli(unittest.TestCase):
         self.assertIn("--suite", output)
         self.assertIn("--list-suites", output)
         self.assertIn("--game", output)
+        self.assertIn("codex-exec", output)
+        self.assertIn("--codex-app-arg", output)
         self.assertNotIn("--level-set", output)
         self.assertNotIn("--n-disks", output)
+
+    def test_runner_shared_build_provider_codex_uses_app_server(self) -> None:
+        args = argparse.Namespace(
+            provider="codex",
+            timeout_s=42,
+            codex_path="codex",
+            codex_app_args=["--enable", "dynamic_tools"],
+            codex_args=["--legacy-flag"],
+            cli_cmd=None,
+            no_stdin=False,
+            provider_retries=2,
+            provider_backoff=1.0,
+            stream_debug=False,
+        )
+        provider = runner_shared.build_provider(
+            args,
+            model="gpt-5.3-codex",
+            max_tool_calls_per_turn=3,
+        )
+        self.assertIsInstance(provider, CodexAppServerProvider)
+        self.assertEqual(provider.model, "gpt-5.3-codex")
+        self.assertEqual(provider.app_args, ["--enable", "dynamic_tools"])
+        self.assertEqual(provider.max_tool_calls_per_turn, 3)
+        self.assertEqual(provider.timeout_s, 42)
+
+    def test_runner_shared_build_provider_codex_exec_uses_legacy_provider(self) -> None:
+        args = argparse.Namespace(
+            provider="codex-exec",
+            timeout_s=21,
+            codex_path="codex",
+            codex_app_args=["--ignored"],
+            codex_args=["--profile", "legacy"],
+            cli_cmd=None,
+            no_stdin=False,
+            provider_retries=2,
+            provider_backoff=1.0,
+            stream_debug=False,
+        )
+        provider = runner_shared.build_provider(args, model=None)
+        self.assertIsInstance(provider, CodexCLIProvider)
+        self.assertEqual(provider.extra_args, ["--profile", "legacy"])
 
     def test_run_sokoban_help_shows_game_specific_flags(self) -> None:
         stdout = io.StringIO()
@@ -105,6 +150,7 @@ class TestBatchCli(unittest.TestCase):
         names = {entry["name"] for entry in payload["suites"]}
         self.assertIn("easy-v1", names)
         self.assertIn("standard-v1", names)
+        self.assertIn("agentic-v1", names)
 
     def test_progress_reporter_updates_without_polluting_stdout(self) -> None:
         class _Recorder:
@@ -217,6 +263,39 @@ class TestBatchCli(unittest.TestCase):
                 * len(run_config["tool_variants"])
             )
             self.assertEqual(len(episodes), expected_episode_count)
+
+    def test_suite_agentic_v1_sets_multi_action_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = (
+                'python -c "print(\'{\\"name\\":\\"hanoi_move\\",'
+                '\\"arguments\\":{\\"from_peg\\":0,\\"to_peg\\":2}}\')"'
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = batch.main(
+                    [
+                        "--provider",
+                        "cli",
+                        "--cli-cmd",
+                        cmd,
+                        "--suite",
+                        "agentic-v1",
+                        "--game",
+                        "hanoi",
+                        "--max-turns",
+                        "1",
+                        "--out-dir",
+                        tmp,
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(len(payload["run_dirs"]), 1)
+            run_dir = Path(payload["run_dirs"][0])
+            run_config = json.loads((run_dir / "run_config.json").read_text())
+            self.assertEqual(run_config["spec"], "agentic-v1-stateful")
+            self.assertEqual(run_config["max_tool_calls_per_turn"], 4)
+            self.assertTrue(run_config["parallel_tool_calls"])
 
     def test_suite_standard_v1_applies_hanoi_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

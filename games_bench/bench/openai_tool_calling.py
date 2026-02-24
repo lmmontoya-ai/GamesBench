@@ -58,6 +58,15 @@ def main() -> int:
     )
     parser.add_argument("--max-turns", type=int, default=200)
     parser.add_argument(
+        "--loop-patience",
+        type=int,
+        default=None,
+        help=(
+            "Early-stop after N repeated state->action->state transitions. "
+            "Disabled when unset."
+        ),
+    )
+    parser.add_argument(
         "--max-tool-calls-per-turn",
         "--max-actions-per-turn",
         type=int,
@@ -93,6 +102,7 @@ def main() -> int:
         adapter,
         provider,
         max_turns=args.max_turns,
+        loop_patience=args.loop_patience,
         max_tool_calls_per_turn=int(args.max_tool_calls_per_turn),
         instructions=instructions,
         allowed_tools=[move_tools[0]],

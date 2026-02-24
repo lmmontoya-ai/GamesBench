@@ -9,6 +9,7 @@ from typing import Any
 from games_bench.bench.game_loader import build_env_and_adapter, parse_env_kwargs
 from games_bench.llm import (
     CLIProvider,
+    CodexAppServerProvider,
     CodexCLIProvider,
     OpenAIResponsesProvider,
     OpenRouterProvider,
@@ -41,6 +42,14 @@ def _build_provider(args: argparse.Namespace) -> Any:
             model=model, parallel_tool_calls=parallel_tool_calls
         )
     if args.provider == "codex":
+        return CodexAppServerProvider(
+            model=args.model,
+            codex_path=args.codex_path,
+            app_args=args.codex_app_args,
+            timeout_s=args.timeout_s,
+            max_tool_calls_per_turn=int(args.max_tool_calls_per_turn),
+        )
+    if args.provider == "codex-exec":
         return CodexCLIProvider(
             codex_path=args.codex_path,
             extra_args=args.codex_args,
@@ -71,7 +80,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Tool-calling benchmark runner.")
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "openai", "codex", "cli"],
+        choices=["openrouter", "openai", "codex", "codex-exec", "cli"],
         required=True,
         help="Which provider to use.",
     )
@@ -81,7 +90,7 @@ def main() -> int:
         default=None,
         help="JSON object of kwargs for the selected game's env factory.",
     )
-    parser.add_argument("--model", help="Model name for OpenAI/OpenRouter.")
+    parser.add_argument("--model", help="Model name for OpenAI/OpenRouter/Codex.")
     parser.add_argument(
         "--n-disks",
         type=int,
@@ -95,6 +104,15 @@ def main() -> int:
         help="Hanoi convenience flag (overrides env_kwargs.n_pegs).",
     )
     parser.add_argument("--max-turns", type=int, default=200)
+    parser.add_argument(
+        "--loop-patience",
+        type=int,
+        default=None,
+        help=(
+            "Early-stop after N repeated state->action->state transitions. "
+            "Disabled when unset."
+        ),
+    )
     parser.add_argument(
         "--max-tool-calls-per-turn",
         "--max-actions-per-turn",
@@ -121,7 +139,14 @@ def main() -> int:
         action="append",
         dest="codex_args",
         default=[],
-        help="Extra args to pass to codex exec (repeatable).",
+        help="Extra args to pass to legacy codex exec (provider=codex-exec).",
+    )
+    parser.add_argument(
+        "--codex-app-arg",
+        action="append",
+        dest="codex_app_args",
+        default=[],
+        help="Extra args to pass to codex app-server (provider=codex).",
     )
 
     args = parser.parse_args()
@@ -134,6 +159,7 @@ def main() -> int:
         adapter,
         provider,
         max_turns=args.max_turns,
+        loop_patience=args.loop_patience,
         max_tool_calls_per_turn=int(args.max_tool_calls_per_turn),
     )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))

@@ -62,6 +62,8 @@ def _easy_v1_config() -> dict[str, Any]:
                 "runs_per_variant": 1,
                 "max_turns": 200,
                 "stagnation_patience": 20,
+                "loop_patience": 20,
+                "max_tool_calls_per_turn": 1,
                 "optimal_turn_cap_multiplier": 4.0,
                 "prompt_variants": ["minimal", "full"],
                 "tool_variants": ["move_only", "move_and_state"],
@@ -101,9 +103,93 @@ def _easy_v1_config() -> dict[str, Any]:
                 "runs_per_level": 1,
                 "max_turns": 300,
                 "stagnation_patience": 40,
+                "loop_patience": 40,
+                "max_tool_calls_per_turn": 1,
                 "deadlock_patience": 6,
                 "prompt_variants": ["minimal", "full"],
-                "tool_variants": ["move_only", "move_and_query"],
+                "tool_variants": ["move_and_query"],
+                "state_format": "text",
+                "detect_deadlocks": True,
+                "terminal_on_deadlock": True,
+            },
+        },
+    }
+
+
+def _agentic_v1_config() -> dict[str, Any]:
+    """Agentic cross-game suite allowing bounded multi-action turns."""
+
+    return {
+        "spec": "agentic-v1",
+        "out_dir": "artifacts/runs",
+        "record": True,
+        "record_raw": False,
+        "record_provider_raw": False,
+        "provider_retries": 2,
+        "provider_backoff": 1.0,
+        "stream_debug": False,
+        "parallelism": 2,
+        "max_inflight_provider": 2,
+        "games": {
+            "hanoi": {
+                # Same difficulty ladder as easy-v1, but allow multi-action turns.
+                "cases": [
+                    {"n_pegs": 3, "n_disks": 2},
+                    {"n_pegs": 3, "n_disks": 3},
+                    {"n_pegs": 3, "n_disks": 4},
+                    {"n_pegs": 3, "n_disks": 5},
+                    {"n_pegs": 4, "n_disks": 4},
+                    {"n_pegs": 4, "n_disks": 5},
+                ],
+                "runs_per_variant": 1,
+                "max_turns": 200,
+                "stagnation_patience": 20,
+                "loop_patience": 20,
+                "max_tool_calls_per_turn": 4,
+                "optimal_turn_cap_multiplier": 4.0,
+                "prompt_variants": ["minimal", "full"],
+                "tool_variants": ["move_only", "move_and_state"],
+                "state_format": "text",
+            },
+            "sokoban": {
+                # Same procedural ladder as easy-v1, with bounded action chaining.
+                "procgen_cases": [
+                    {
+                        "grid_size": "8x8",
+                        "box_count": 2,
+                        "scramble_steps": [24, 32],
+                        "levels_per_combo": 4,
+                    },
+                    {
+                        "grid_size": "8x8",
+                        "box_count": 3,
+                        "scramble_steps": [36, 48],
+                        "levels_per_combo": 4,
+                    },
+                    {
+                        "grid_size": "10x10",
+                        "box_count": 3,
+                        "scramble_steps": [50, 70],
+                        "levels_per_combo": 3,
+                    },
+                    {
+                        "grid_size": "10x10",
+                        "box_count": 4,
+                        "scramble_steps": [70, 90],
+                        "levels_per_combo": 3,
+                    },
+                ],
+                "procgen_seed": 2026,
+                "procgen_wall_density": 0.08,
+                "max_levels": None,
+                "runs_per_level": 1,
+                "max_turns": 300,
+                "stagnation_patience": 40,
+                "loop_patience": 40,
+                "max_tool_calls_per_turn": 2,
+                "deadlock_patience": 6,
+                "prompt_variants": ["minimal", "full"],
+                "tool_variants": ["move_and_query"],
                 "state_format": "text",
                 "detect_deadlocks": True,
                 "terminal_on_deadlock": True,
@@ -144,6 +230,8 @@ def _standard_v1_config() -> dict[str, Any]:
                 "runs_per_variant": 2,
                 "max_turns": 400,
                 "stagnation_patience": 40,
+                "loop_patience": 40,
+                "max_tool_calls_per_turn": 1,
                 "optimal_turn_cap_multiplier": 4.0,
                 "prompt_variants": ["minimal", "full"],
                 "tool_variants": ["move_only", "move_and_state"],
@@ -183,9 +271,11 @@ def _standard_v1_config() -> dict[str, Any]:
                 "runs_per_level": 1,
                 "max_turns": 400,
                 "stagnation_patience": 80,
+                "loop_patience": 80,
+                "max_tool_calls_per_turn": 1,
                 "deadlock_patience": 8,
                 "prompt_variants": ["minimal", "full"],
-                "tool_variants": ["move_only", "move_and_query"],
+                "tool_variants": ["move_and_query"],
                 "state_format": "text",
                 "detect_deadlocks": True,
                 "terminal_on_deadlock": True,
@@ -215,5 +305,16 @@ def load_builtin_suites() -> None:
                     "fixed difficulty ladders and repeated runs."
                 ),
                 config_factory=_standard_v1_config,
+            )
+        )
+    if "agentic-v1" not in _REGISTRY:
+        register_suite(
+            SuiteSpec(
+                name="agentic-v1",
+                description=(
+                    "Agentic planning suite across Hanoi and Sokoban with "
+                    "bounded multi-action turns."
+                ),
+                config_factory=_agentic_v1_config,
             )
         )

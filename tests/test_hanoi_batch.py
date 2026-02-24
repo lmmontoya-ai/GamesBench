@@ -329,6 +329,21 @@ class TestHanoiBatch(unittest.TestCase):
             self.assertEqual(run_config["max_tool_calls_per_turn"], 2)
             self.assertTrue(run_config["parallel_tool_calls"])
 
+    def test_action_budget_instructions_reflect_tool_call_cap(self) -> None:
+        single = hanoi_bench._with_action_budget_instructions(
+            "Base instructions.", max_tool_calls_per_turn=1
+        )
+        self.assertIn("Action budget per turn:", single)
+        self.assertIn("at most 1 tool call", single)
+        self.assertIn("Choose exactly one move/query", single)
+
+        multi = hanoi_bench._with_action_budget_instructions(
+            "Base instructions.", max_tool_calls_per_turn=4
+        )
+        self.assertIn("Action budget per turn:", multi)
+        self.assertIn("up to 4 tool calls", multi)
+        self.assertIn("chain actions", multi)
+
     def test_run_batch_supports_n_pegs_variants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = argparse.Namespace(
