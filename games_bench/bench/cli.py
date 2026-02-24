@@ -8,6 +8,7 @@ from games_bench.bench import (
     compare,
     manual_tool_loop,
     openai_tool_calling,
+    publish,
     provider,
     render,
     review,
@@ -20,6 +21,7 @@ from games_bench.bench import (
 COMMANDS: dict[str, tuple[str, Callable[[], int]]] = {
     "run": ("Batch benchmark", batch.main),
     "score": ("Score run artifacts", scoring.main),
+    "publish": ("Package and build website data", publish.main),
     "compare": ("Compare baseline and candidate runs", compare.main),
     "provider": ("Single provider episode", provider.main),
     "render": ("Render recordings (html/video)", render.main),

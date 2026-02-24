@@ -1,0 +1,101 @@
+name: Publish Site Data
+
+on:
+  push:
+    branches:
+      - prod
+  pull_request:
+    branches:
+      - prod
+  workflow_dispatch:
+
+concurrency:
+  group: publish-site-data-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --group bench
+
+      - name: Build site data
+        run: |
+          uv run games-bench publish build-site \
+            --input-releases bench_results/releases \
+            --input-trajectories bench_results/trajectories \
+            --output-dir dist/site_data \
+            --strict
+
+      - name: Upload site data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site_data
+          path: dist/site_data
+
+  publish_to_site:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: build_data
+    runs-on: ubuntu-latest
+    env:
+      SITE_REPO: ${{ vars.SITE_REPO }}
+      SITE_REPO_BRANCH: ${{ vars.SITE_REPO_BRANCH || 'main' }}
+      SITE_DATA_PATH: ${{ vars.SITE_DATA_PATH || 'data' }}
+      SITE_REPO_PAT: ${{ secrets.SITE_REPO_PAT }}
+    steps:
+      - name: Validate publish config
+        run: |
+          if [ -z "$SITE_REPO" ]; then
+            echo "Missing vars.SITE_REPO"
+            exit 1
+          fi
+          if [ -z "$SITE_REPO_PAT" ]; then
+            echo "Missing secrets.SITE_REPO_PAT"
+            exit 1
+          fi
+
+      - name: Download site data artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site_data
+          path: dist/site_data
+
+      - name: Configure git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Push data to site repo
+        run: |
+          set -euo pipefail
+
+          TARGET_DIR="$RUNNER_TEMP/site_repo"
+          REPO_URL="https://x-access-token:${SITE_REPO_PAT}@github.com/${SITE_REPO}.git"
+
+          git clone --depth 1 --branch "$SITE_REPO_BRANCH" "$REPO_URL" "$TARGET_DIR"
+
+          mkdir -p "$TARGET_DIR/$SITE_DATA_PATH"
+          find "$TARGET_DIR/$SITE_DATA_PATH" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          cp -R dist/site_data/. "$TARGET_DIR/$SITE_DATA_PATH/"
+
+          cd "$TARGET_DIR"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No data changes to publish"
+            exit 0
+          fi
+
+          git add "$SITE_DATA_PATH"
+          git commit -m "Update benchmark site data (${GITHUB_SHA})"
+          git push origin "$SITE_REPO_BRANCH"
